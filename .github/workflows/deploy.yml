@@ -16,8 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FIREBASE_PROJECT: ${{ vars.FIREBASE_PROJECT || 'chrisstop-app' }}
+      HAS_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Chýba prístup k Firebase
+        if: env.HAS_CREDENTIALS != 'true'
+        run: echo "::warning::Tajomstvo FIREBASE_SERVICE_ACCOUNT ešte nie je nastavené – aplikácia sa zostaví, ale nenasadí. Postup je v README (scripts/cloud-setup.sh)."
 
       - uses: actions/setup-node@v4
         with:
@@ -38,9 +43,11 @@ jobs:
           npm run build --prefix functions
 
       - name: Prihlásenie do Google Cloud
+        if: env.HAS_CREDENTIALS == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
       - name: Nasadenie
+        if: env.HAS_CREDENTIALS == 'true'
         run: npx firebase deploy --project "$FIREBASE_PROJECT" --non-interactive --force
