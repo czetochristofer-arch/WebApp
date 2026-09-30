@@ -18,13 +18,13 @@ jobs:
       FIREBASE_PROJECT: ${{ vars.FIREBASE_PROJECT || 'chrisstop-app' }}
       HAS_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Chýba prístup k Firebase
         if: env.HAS_CREDENTIALS != 'true'
         run: echo "::warning::Tajomstvo FIREBASE_SERVICE_ACCOUNT ešte nie je nastavené – aplikácia sa zostaví, ale nenasadí. Postup je v README (scripts/cloud-setup.sh)."
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -48,6 +48,24 @@ jobs:
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      - name: Nasadenie
+      # Web, databáza a úložisko sa nasadia samostatne, aby aplikácia bežala aj vtedy,
+      # keď by mali problém serverové funkcie. Chybové hlásenia sa zapíšu ako anotácie behu.
+      - name: Nasadenie – web, databáza, úložisko
+        id: web
         if: env.HAS_CREDENTIALS == 'true'
-        run: npx firebase deploy --project "$FIREBASE_PROJECT" --non-interactive --force
+        run: |
+          set -o pipefail
+          npx firebase deploy --only hosting,firestore,storage --project "$FIREBASE_PROJECT" --non-interactive --force 2>&1 | tee deploy-web.log || {
+            grep -iE "error|denied|permission|not enabled|billing|failed|must" deploy-web.log | grep -v "^i " | head -12 | sed 's/^/::error title=web::/'
+            exit 1
+          }
+
+      - name: Nasadenie – serverové funkcie a AI asistent
+        if: env.HAS_CREDENTIALS == 'true' && !cancelled()
+        run: |
+          set -o pipefail
+          npx firebase deploy --only functions --project "$FIREBASE_PROJECT" --non-interactive --force 2>&1 | tee deploy-functions.log || {
+            grep -iE "error|denied|permission|not enabled|billing|failed|must" deploy-functions.log | grep -v "^i " | head -12 | sed 's/^/::error title=functions::/'
+            [ -f firebase-debug.log ] && grep -iE "\"message\"|error" firebase-debug.log | tail -6 | cut -c1-400 | sed 's/^/::error title=debug::/'
+            exit 1
+          }
