@@ -31,6 +31,9 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
+        // Vyhradené adresy Firebase (prihlásenie Google /__/auth/handler, konfigurácia) nesmie
+        // offline režim nahradiť aplikáciou – inak sa prihlásenie nikdy nedokončí.
+        navigateFallbackDenylist: [/^\/__\//],
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },

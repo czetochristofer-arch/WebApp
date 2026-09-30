@@ -57,13 +57,9 @@ async function loadConfig(): Promise<FirebaseOptions> {
 }
 
 export async function initFirebase(): Promise<void> {
+  // Prihlasovanie beží cez predvolenú doménu projektu (…firebaseapp.com), ktorú má Google
+  // povolenú automaticky. Prihlásenie používa vyskakovacie okno, takže funguje aj v Safari.
   const cfg = await loadConfig();
-  // Na vlastnej doméne Firebase Hostingu používame tú istú doménu aj na prihlásenie,
-  // aby prihlásenie cez Google fungovalo aj v Safari a v nainštalovanej aplikácii.
-  const host = window.location.host;
-  if (!useEmulators && (host.endsWith('.web.app') || host.endsWith('.firebaseapp.com'))) {
-    cfg.authDomain = host;
-  }
   app = initializeApp(cfg);
   auth = getAuth(app);
   db = initializeFirestore(app, {
