@@ -1,0 +1,46 @@
+# Pri každom pushnutí do vetvy main sa aplikácia zostaví a nasadí na Firebase
+# (hosting, databázové pravidlá, indexy, pravidlá úložiska a serverové funkcie).
+name: Nasadenie na Firebase
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FIREBASE_PROJECT: ${{ vars.FIREBASE_PROJECT || 'chrisstop-app' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            functions/package-lock.json
+
+      - name: Inštalácia závislostí
+        run: |
+          npm ci
+          npm ci --prefix functions
+
+      - name: Kontrola a build
+        run: |
+          npm run build
+          npm run build --prefix functions
+
+      - name: Prihlásenie do Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Nasadenie
+        run: npx firebase deploy --project "$FIREBASE_PROJECT" --non-interactive --force

@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// Prístup majú iba prihlásení používatelia, ktorí majú záznam v kolekcii `members`
+// (vytvára ho serverová funkcia joinWorkspace pre majiteľa alebo pozvaného člena).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function memberDoc() {
+      return /databases/$(database)/documents/members/$(request.auth.uid);
+    }
+    function isMember() {
+      return signedIn() && exists(memberDoc());
+    }
+    function isOwner() {
+      return isMember() && get(memberDoc()).data.role == 'owner';
+    }
+
+    match /members/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isMember());
+      // Majiteľ môže upraviť/odobrať iných členov, nie seba.
+      allow update, delete: if isOwner() && uid != request.auth.uid;
+      allow create: if false;
+    }
+
+    match /invites/{email} {
+      allow read, write: if isOwner();
+    }
+
+    match /settings/{docId} {
+      allow read: if isMember();
+      allow write: if isOwner();
+    }
+
+    match /counters/{name} {
+      allow read, create, update: if isMember();
+    }
+
+    // Obchodné dáta: členovia môžu čítať, vytvárať a upravovať; mazať iba majiteľ.
+    match /{collection}/{docId} {
+      allow read, create, update: if isMember()
+        && collection in ['customers', 'repairs', 'orders', 'events', 'priceList'];
+      allow delete: if (isMember() && collection in ['events', 'priceList'])
+        || (isOwner() && collection in ['customers', 'repairs', 'orders']);
+    }
+
+    // Konverzácie s AI asistentom zapisuje iba server; používateľ vidí len svoje.
+    match /agentThreads/{threadId} {
+      allow read, delete: if isMember() && resource.data.uid == request.auth.uid;
+      allow update: if isMember() && resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title']);
+      allow create: if false;
+
+      match /messages/{messageId} {
+        allow read: if isMember()
+          && get(/databases/$(database)/documents/agentThreads/$(threadId)).data.uid == request.auth.uid;
+        allow write: if false;
+      }
+    }
+  }
+}

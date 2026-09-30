@@ -1,0 +1,848 @@
+import { z } from 'zod';
+import type { DocumentData, DocumentSnapshot } from 'firebase-admin/firestore';
+import {
+  db,
+  ensureCustomer,
+  FieldValue,
+  history,
+  newItemId,
+  nextNumber,
+  OPEN_ORDER,
+  OPEN_REPAIR,
+  ORDER_LABEL,
+  ORDER_STATUSES,
+  orderKeywords,
+  customerKeywords,
+  REPAIR_LABEL,
+  REPAIR_STATUSES,
+  repairKeywords,
+  round2,
+  Timestamp,
+  totals,
+  type LineItem,
+} from '../lib/store.js';
+import { matches, searchToken } from '../lib/keywords.js';
+import { endOfLocalDay, fmtLocal, localHm, localToDate, localYmd, startOfLocalDay } from '../lib/time.js';
+import { buildKeywords } from '../lib/keywords.js';
+
+export interface ToolContext {
+  actor: string;
+  settings: DocumentData;
+}
+
+export interface ToolOutcome {
+  result: unknown;
+  /** Odkaz, ktorý sa zobrazí v aplikácii (napr. „Zákazka Z-1042 vytvorená“). */
+  action?: { label: string; link?: string };
+}
+
+interface ToolDef<S extends z.ZodType> {
+  name: string;
+  description: string;
+  schema: S;
+  label: (input: z.infer<S>) => string;
+  run: (input: z.infer<S>, ctx: ToolContext) => Promise<ToolOutcome>;
+}
+
+function tool<S extends z.ZodType>(def: ToolDef<S>) {
+  return def;
+}
+
+// ------------------------------------------------------------------ spoločné schémy
+
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'formát YYYY-MM-DD');
+const hm = z.string().regex(/^\d{1,2}:\d{2}$/, 'formát HH:MM');
+const money = z.number().min(0);
+const repairStatus = z.enum(REPAIR_STATUSES);
+const orderStatus = z.enum(ORDER_STATUSES);
+const payment = z.enum(['hotovost', 'karta', 'prevod']);
+
+const customerIn = z
+  .object({
+    id: z.string().optional().describe('ID existujúceho zákazníka, ak ho poznáš (z vyhľadávania).'),
+    meno: z.string().describe('Meno a priezvisko zákazníka.'),
+    telefon: z.string().optional(),
+    email: z.string().optional(),
+  })
+  .describe('Zákazník. Ak zadáš telefón, existujúci zákazník s rovnakým číslom sa použije automaticky.');
+
+const itemIn = z.object({
+  nazov: z.string(),
+  typ: z.enum(['praca', 'diel', 'tovar', 'ine']).optional().describe('praca = práca/servis, diel = náhradný diel, tovar = predaj tovaru'),
+  pocet: z.number().positive().optional(),
+  cena: money.describe('Predajná cena za kus v € (konečná cena pre zákazníka).'),
+  nakup: money.optional().describe('Nákupná cena za kus v €, ak je známa.'),
+  stav_dielu: z.enum(['treba_objednat', 'objednane', 'dorucene', 'na_sklade']).optional().describe('Len pre typ diel.'),
+  dodavatel: z.string().optional(),
+});
+
+function toItem(i: z.infer<typeof itemIn>, defaultKind: LineItem['kind']): LineItem {
+  const kind = i.typ ?? defaultKind;
+  return {
+    id: newItemId(),
+    kind,
+    name: i.nazov.trim(),
+    qty: i.pocet ?? 1,
+    price: i.cena,
+    cost: i.nakup ?? 0,
+    partStatus: kind === 'diel' ? i.stav_dielu ?? 'treba_objednat' : null,
+    supplier: i.dodavatel ?? '',
+  };
+}
+
+// ------------------------------------------------------------------ prevod dokumentov do stručnej podoby
+
+const ts = (t: unknown) => (t instanceof Timestamp ? t.toDate() : null);
+const repairSum = (r: DocumentData) => (r.items?.length ? r.total : r.estimate ?? 0);
+
+function repairBrief(snap: DocumentSnapshot) {
+  const r = snap.data()!;
+  const due = ts(r.dueAt);
+  return {
+    id: snap.id,
+    cislo: r.number,
+    stav: r.status,
+    stav_popis: REPAIR_LABEL[r.status] ?? r.status,
+    zariadenie: `${r.device?.brand ?? ''} ${r.device?.model ?? ''}`.trim(),
+    porucha: r.problem,
+    zakaznik: r.customer?.name,
+    telefon: r.customer?.phone || undefined,
+    termin: due ? localYmd(due) : null,
+    po_termine: !!due && OPEN_REPAIR.includes(r.status) && r.status !== 'hotove' && localYmd(due) < localYmd(new Date()),
+    suma: round2(repairSum(r)),
+    zaplatene: !!r.paid,
+    priorita: r.priority,
+    prijate: fmtLocal(ts(r.createdAt)),
+  };
+}
+
+function repairFull(snap: DocumentSnapshot) {
+  const r = snap.data()!;
+  return {
+    ...repairBrief(snap),
+    zakaznik: { id: r.customerId, meno: r.customer?.name, telefon: r.customer?.phone, email: r.customer?.email },
+    zariadenie: {
+      typ: r.device?.type,
+      znacka: r.device?.brand,
+      model: r.device?.model,
+      imei: r.device?.imei,
+      farba: r.device?.color,
+      prislusenstvo: r.device?.accessories,
+      stav_pri_prevzati: r.device?.condition,
+      ma_zadany_kod: !!r.device?.passcode,
+    },
+    diagnostika: r.diagnosis,
+    polozky: (r.items ?? []).map((i: LineItem) => ({ nazov: i.name, typ: i.kind, pocet: i.qty, cena: i.price, nakup: i.cost, stav_dielu: i.partStatus ?? undefined, dodavatel: i.supplier || undefined })),
+    predbezna_cena: r.estimate,
+    naklady: r.totalCost,
+    zaloha: r.deposit,
+    sposob_platby: r.paymentMethod,
+    zaruka_dni: r.warrantyDays,
+    poznamka_pre_zakaznika: r.notes,
+    interna_poznamka: r.internalNotes,
+    pocet_fotiek: r.photos?.length ?? 0,
+    uzavrete: fmtLocal(ts(r.closedAt), true),
+    historia: (r.history ?? []).slice(-15).map((h: { at: Timestamp; by: string; text: string }) => `${fmtLocal(h.at.toDate(), true)} – ${h.text} (${h.by})`),
+  };
+}
+
+function orderBrief(snap: DocumentSnapshot) {
+  const o = snap.data()!;
+  return {
+    id: snap.id,
+    cislo: o.number,
+    stav: o.status,
+    stav_popis: ORDER_LABEL[o.status] ?? o.status,
+    polozky: (o.items ?? []).map((i: LineItem) => `${i.qty}× ${i.name} (${i.price} €)`),
+    zakaznik: o.customer?.name,
+    telefon: o.customer?.phone || undefined,
+    dodavatel: o.supplier || undefined,
+    suma: o.total,
+    naklady: o.totalCost,
+    zaloha: o.deposit,
+    zaplatene: !!o.paid,
+    ocakavane: ts(o.expectedAt) ? localYmd(ts(o.expectedAt)!) : null,
+    vytvorene: fmtLocal(ts(o.createdAt)),
+    poznamka: o.notes || undefined,
+  };
+}
+
+function eventBrief(snap: DocumentSnapshot) {
+  const e = snap.data()!;
+  const start = ts(e.start)!;
+  const end = ts(e.end)!;
+  return {
+    id: snap.id,
+    nazov: e.title,
+    typ: e.type,
+    datum: localYmd(start),
+    cas: e.allDay ? 'celý deň' : `${localHm(start)}–${localHm(end)}`,
+    splnene: e.type === 'uloha' ? !!e.done : undefined,
+    zakazka: e.repairNumber || undefined,
+    poznamka: e.notes || undefined,
+  };
+}
+
+// ------------------------------------------------------------------ vyhľadanie záznamu podľa čísla
+
+async function findByNumber(collection: 'repairs' | 'orders', ref: string, prefix: string) {
+  const col = db().collection(collection);
+  const clean = ref.trim();
+  const m = clean.match(/^([A-Za-z]*)[-\s]?(\d+)$/);
+  if (m) {
+    const number = `${(m[1] || prefix).toUpperCase()}-${m[2]}`;
+    const q = await col.where('number', '==', number).limit(1).get();
+    if (!q.empty) return q.docs[0];
+    const q2 = await col.where('seq', '==', Number(m[2])).limit(1).get();
+    if (!q2.empty) return q2.docs[0];
+  }
+  const snap = await col.doc(clean).get();
+  return snap.exists ? snap : null;
+}
+
+async function textSearch(collection: string, q: string, fields: (d: DocumentData) => (string | undefined)[], limit = 10) {
+  const token = searchToken(q);
+  if (!token) return [];
+  const snap = await db().collection(collection).where('keywords', 'array-contains', token).limit(60).get();
+  return snap.docs.filter((d) => matches(fields(d.data()), q)).slice(0, limit);
+}
+
+const notFound = (what: string) => ({ result: { chyba: `${what} sa nenašla. Skús vyhľadávanie.` } });
+
+// ------------------------------------------------------------------ nástroje
+
+export const TOOLS = [
+  tool({
+    name: 'prehlad_dna',
+    description:
+      'Prehľad aktuálnej situácie v servise: zákazky po termíne, hotové na vyzdvihnutie, diely na objednanie, čakajúce na schválenie, objednávky na objednanie a doručené, dnešný program a otvorené úlohy. Použi pri otázkach typu „čo mám dnes robiť“, „ako to vyzerá“.',
+    schema: z.object({}),
+    label: () => 'Prehľad dňa',
+    run: async () => {
+      const now = new Date();
+      const today = localYmd(now);
+      const [repairs, orders, events, tasks] = await Promise.all([
+        db().collection('repairs').where('status', 'in', OPEN_REPAIR).get(),
+        db().collection('orders').where('status', 'in', OPEN_ORDER).get(),
+        db().collection('events').where('start', '>=', startOfLocalDay(today)).where('start', '<=', endOfLocalDay(today)).get(),
+        db().collection('events').where('type', '==', 'uloha').where('done', '==', false).get(),
+      ]);
+      const rs = repairs.docs.map(repairBrief);
+      const partsToOrder = repairs.docs
+        .filter((d) => (d.data().items ?? []).some((i: LineItem) => i.kind === 'diel' && i.partStatus === 'treba_objednat'))
+        .map((d) => ({ cislo: d.data().number, diely: d.data().items.filter((i: LineItem) => i.partStatus === 'treba_objednat').map((i: LineItem) => i.name) }));
+      return {
+        result: {
+          dnes: today,
+          rozpracovane_zakazky: rs.length,
+          po_termine: rs.filter((r) => r.po_termine),
+          termin_dnes: rs.filter((r) => r.termin === today && r.stav !== 'hotove'),
+          hotove_na_vyzdvihnutie: rs.filter((r) => r.stav === 'hotove'),
+          caka_na_schvalenie: rs.filter((r) => r.stav === 'caka_schvalenie'),
+          diely_na_objednanie: partsToOrder,
+          objednavky_treba_objednat: orders.docs.filter((d) => d.data().status === 'nova').map(orderBrief),
+          objednavky_dorucene: orders.docs.filter((d) => d.data().status === 'dorucena').map(orderBrief),
+          dnesny_program: events.docs.filter((d) => d.data().type !== 'uloha').map(eventBrief),
+          otvorene_ulohy: tasks.docs.map(eventBrief),
+        },
+      };
+    },
+  }),
+
+  tool({
+    name: 'hladaj',
+    description: 'Fulltextové vyhľadávanie v zákazkách, objednávkach a zákazníkoch podľa mena, telefónu, čísla, IMEI, modelu zariadenia alebo názvu tovaru.',
+    schema: z.object({ dotaz: z.string().min(2).describe('Hľadaný text, napr. „Novák“, „0905123“, „iPhone 13“, „Z-1042“.') }),
+    label: (i) => `Hľadám „${i.dotaz}“`,
+    run: async ({ dotaz }) => {
+      const [repairs, orders, customers] = await Promise.all([
+        textSearch('repairs', dotaz, (r) => [r.number, r.customer?.name, r.customer?.phone, r.device?.brand, r.device?.model, r.device?.imei, r.problem]),
+        textSearch('orders', dotaz, (o) => [o.number, o.customer?.name, o.customer?.phone, o.supplier, ...(o.items ?? []).map((i: LineItem) => i.name)]),
+        textSearch('customers', dotaz, (c) => [c.name, c.phone, c.email, c.company]),
+      ]);
+      return {
+        result: {
+          zakazky: repairs.map(repairBrief),
+          objednavky: orders.map(orderBrief),
+          zakaznici: customers.map((c) => ({ id: c.id, meno: c.data().name, telefon: c.data().phone, email: c.data().email || undefined, firma: c.data().company || undefined })),
+        },
+      };
+    },
+  }),
+
+  tool({
+    name: 'zoznam_zakaziek',
+    description: 'Zoznam servisných zákaziek podľa filtra (stav, termín, dátum prijatia, zákazník). Bez filtra vráti otvorené (nevydané) zákazky.',
+    schema: z.object({
+      stavy: z.array(repairStatus).optional().describe('Filtrovať podľa stavov.'),
+      iba_po_termine: z.boolean().optional(),
+      termin_od: ymd.optional(),
+      termin_do: ymd.optional(),
+      prijate_od: ymd.optional(),
+      prijate_do: ymd.optional(),
+      zakaznik_id: z.string().optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    label: () => 'Načítavam zákazky',
+    run: async (f) => {
+      let q: FirebaseFirestore.Query = db().collection('repairs');
+      if (f.zakaznik_id) q = q.where('customerId', '==', f.zakaznik_id);
+      else if (f.prijate_od || f.prijate_do) {
+        if (f.prijate_od) q = q.where('createdAt', '>=', startOfLocalDay(f.prijate_od));
+        if (f.prijate_do) q = q.where('createdAt', '<=', endOfLocalDay(f.prijate_do));
+      } else q = q.where('status', 'in', f.stavy?.length ? f.stavy : OPEN_REPAIR);
+      const snap = await q.limit(500).get();
+      let list = snap.docs.map(repairBrief);
+      if (f.stavy?.length) list = list.filter((r) => f.stavy!.includes(r.stav as never));
+      if (f.iba_po_termine) list = list.filter((r) => r.po_termine);
+      if (f.termin_od) list = list.filter((r) => r.termin && r.termin >= f.termin_od!);
+      if (f.termin_do) list = list.filter((r) => r.termin && r.termin <= f.termin_do!);
+      list.sort((a, b) => (a.termin ?? '9999').localeCompare(b.termin ?? '9999'));
+      return { result: { pocet: list.length, zakazky: list.slice(0, f.limit ?? 40) } };
+    },
+  }),
+
+  tool({
+    name: 'detail_zakazky',
+    description: 'Všetky údaje o jednej zákazke vrátane položiek, platby a histórie.',
+    schema: z.object({ zakazka: z.string().describe('Číslo zákazky (napr. „Z-1042“ alebo „1042“) alebo jej ID.') }),
+    label: (i) => `Otváram zákazku ${i.zakazka}`,
+    run: async ({ zakazka }, ctx) => {
+      const snap = await findByNumber('repairs', zakazka, ctx.settings.repairPrefix);
+      if (!snap) return notFound('Zákazka');
+      return { result: repairFull(snap), action: { label: `Zákazka ${snap.data()!.number}`, link: `/zakazky/${snap.id}` } };
+    },
+  }),
+
+  tool({
+    name: 'vytvor_zakazku',
+    description: 'Vytvorí novú servisnú zákazku (prijatie zariadenia do opravy). Zákazník sa automaticky priradí alebo vytvorí.',
+    schema: z.object({
+      zakaznik: customerIn,
+      zariadenie: z.object({
+        typ: z.enum(['mobil', 'tablet', 'notebook', 'hodinky', 'konzola', 'ine']).optional(),
+        znacka: z.string().describe('napr. Apple, Samsung'),
+        model: z.string().describe('napr. iPhone 13 Pro'),
+        imei: z.string().optional(),
+        farba: z.string().optional(),
+        prislusenstvo: z.string().optional(),
+        stav_pri_prevzati: z.string().optional(),
+      }),
+      porucha: z.string().describe('Popis poruchy od zákazníka.'),
+      predbezna_cena: money.optional(),
+      zaloha: money.optional(),
+      termin: ymd.optional().describe('Termín dokončenia. Ak nie je povedaný, nechaj prázdne (nastaví sa o 2 dni).'),
+      priorita: z.enum(['nizka', 'normalna', 'vysoka', 'urgentna']).optional(),
+      polozky: z.array(itemIn).optional().describe('Práca a diely, ak sú už známe.'),
+      poznamka_pre_zakaznika: z.string().optional(),
+      interna_poznamka: z.string().optional(),
+    }),
+    label: (i) => `Vytváram zákazku – ${i.zariadenie.znacka} ${i.zariadenie.model}`,
+    run: async (i, ctx) => {
+      const customer = await ensureCustomer({ id: i.zakaznik.id, name: i.zakaznik.meno, phone: i.zakaznik.telefon, email: i.zakaznik.email });
+      const { seq, number } = await nextNumber('repairs', ctx.settings.repairPrefix);
+      const items = (i.polozky ?? []).map((x) => toItem(x, 'praca'));
+      const due = i.termin ? endOfLocalDay(i.termin) : endOfLocalDay(localYmd(new Date(Date.now() + 2 * 86400000)));
+      const device = {
+        type: i.zariadenie.typ ?? 'mobil',
+        brand: i.zariadenie.znacka,
+        model: i.zariadenie.model,
+        imei: i.zariadenie.imei ?? '',
+        color: i.zariadenie.farba ?? '',
+        passcode: '',
+        accessories: i.zariadenie.prislusenstvo ?? '',
+        condition: i.zariadenie.stav_pri_prevzati ?? '',
+      };
+      const data = {
+        number,
+        seq,
+        status: 'prijate',
+        priority: i.priorita ?? 'normalna',
+        customerId: customer.id,
+        customer,
+        device,
+        problem: i.porucha,
+        diagnosis: '',
+        items,
+        ...totals(items),
+        estimate: i.predbezna_cena ?? null,
+        deposit: i.zaloha ?? 0,
+        paid: false,
+        paymentMethod: null,
+        paidAt: null,
+        warrantyDays: ctx.settings.defaultWarrantyDays ?? 90,
+        dueAt: Timestamp.fromDate(due),
+        notes: i.poznamka_pre_zakaznika ?? '',
+        internalNotes: i.interna_poznamka ?? '',
+        photos: [],
+        keywords: repairKeywords({ number, customer, device }),
+        history: [history(ctx.actor, 'Zákazka vytvorená AI asistentom')],
+        createdBy: ctx.actor,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        closedAt: null,
+      };
+      const ref = await db().collection('repairs').add(data);
+      return {
+        result: { ok: true, id: ref.id, cislo: number, zakaznik: customer.name, termin: localYmd(due) },
+        action: { label: `Vytvorená zákazka ${number}`, link: `/zakazky/${ref.id}` },
+      };
+    },
+  }),
+
+  tool({
+    name: 'uprav_zakazku',
+    description:
+      'Upraví existujúcu zákazku: zmena stavu, diagnostika, pridanie položiek (práca/diely), stav dielov, cena, záloha, termín, priorita, poznámky, platba. Pri vydaní zákazníkovi nastav stav „vydane“ a zaplatene=true so spôsobom platby.',
+    schema: z.object({
+      zakazka: z.string().describe('Číslo zákazky alebo ID.'),
+      stav: repairStatus.optional(),
+      diagnostika: z.string().optional(),
+      pridaj_polozky: z.array(itemIn).optional(),
+      nastav_stav_dielu: z
+        .array(z.object({ nazov: z.string(), stav: z.enum(['treba_objednat', 'objednane', 'dorucene', 'na_sklade']) }))
+        .optional()
+        .describe('Zmena stavu existujúcich dielov podľa názvu (stačí časť názvu).'),
+      predbezna_cena: money.optional(),
+      zaloha: money.optional(),
+      termin: ymd.optional(),
+      priorita: z.enum(['nizka', 'normalna', 'vysoka', 'urgentna']).optional(),
+      poznamka_pre_zakaznika: z.string().optional(),
+      interna_poznamka: z.string().optional(),
+      zaplatene: z.boolean().optional(),
+      sposob_platby: payment.optional(),
+      zaznam_do_historie: z.string().optional().describe('Krátky záznam do histórie, napr. „Zákazník telefonicky schválil cenu“.'),
+    }),
+    label: (i) => `Upravujem zákazku ${i.zakazka}`,
+    run: async (i, ctx) => {
+      const snap = await findByNumber('repairs', i.zakazka, ctx.settings.repairPrefix);
+      if (!snap) return notFound('Zákazka');
+      const r = snap.data()!;
+      const update: DocumentData = { updatedAt: FieldValue.serverTimestamp() };
+      const notes: string[] = [];
+      let items: LineItem[] = r.items ?? [];
+      if (i.pridaj_polozky?.length) {
+        items = [...items, ...i.pridaj_polozky.map((x) => toItem(x, 'praca'))];
+        notes.push(`Pridané položky: ${i.pridaj_polozky.map((x) => x.nazov).join(', ')}`);
+      }
+      if (i.nastav_stav_dielu?.length) {
+        items = items.map((it) => {
+          const hit = i.nastav_stav_dielu!.find((p) => it.name.toLowerCase().includes(p.nazov.toLowerCase()));
+          return hit ? { ...it, partStatus: hit.stav } : it;
+        });
+        notes.push(`Stav dielov: ${i.nastav_stav_dielu.map((p) => `${p.nazov} → ${p.stav}`).join(', ')}`);
+      }
+      if (i.pridaj_polozky?.length || i.nastav_stav_dielu?.length) Object.assign(update, { items, ...totals(items) });
+      if (i.stav && i.stav !== r.status) {
+        update.status = i.stav;
+        update.closedAt = i.stav === 'vydane' || i.stav === 'zrusene' ? FieldValue.serverTimestamp() : null;
+        notes.push(`Stav: ${REPAIR_LABEL[r.status]} → ${REPAIR_LABEL[i.stav]}`);
+      }
+      if (i.diagnostika !== undefined) update.diagnosis = i.diagnostika;
+      if (i.predbezna_cena !== undefined) update.estimate = i.predbezna_cena;
+      if (i.zaloha !== undefined) update.deposit = i.zaloha;
+      if (i.termin) update.dueAt = Timestamp.fromDate(endOfLocalDay(i.termin));
+      if (i.priorita) update.priority = i.priorita;
+      if (i.poznamka_pre_zakaznika !== undefined) update.notes = i.poznamka_pre_zakaznika;
+      if (i.interna_poznamka !== undefined) update.internalNotes = i.interna_poznamka;
+      if (i.zaplatene !== undefined) {
+        update.paid = i.zaplatene;
+        update.paidAt = i.zaplatene ? FieldValue.serverTimestamp() : null;
+        if (i.zaplatene) notes.push('Zaplatené');
+      }
+      if (i.sposob_platby) update.paymentMethod = i.sposob_platby;
+      if (i.zaznam_do_historie) notes.push(i.zaznam_do_historie);
+      notes.push('(upravené AI asistentom)');
+      update.history = FieldValue.arrayUnion(...notes.map((t) => history(ctx.actor, t)));
+      await snap.ref.update(update);
+      const fresh = await snap.ref.get();
+      return { result: { ok: true, zakazka: repairFull(fresh) }, action: { label: `Upravená zákazka ${r.number}`, link: `/zakazky/${snap.id}` } };
+    },
+  }),
+
+  tool({
+    name: 'zoznam_objednavok',
+    description: 'Zoznam malých objednávok tovaru (puzdrá, sklá, nabíjačky…). Bez filtra vráti otvorené objednávky.',
+    schema: z.object({ stavy: z.array(orderStatus).optional(), limit: z.number().int().min(1).max(100).optional() }),
+    label: () => 'Načítavam objednávky',
+    run: async (f) => {
+      const snap = await db()
+        .collection('orders')
+        .where('status', 'in', f.stavy?.length ? f.stavy : OPEN_ORDER)
+        .limit(300)
+        .get();
+      const list = snap.docs.map(orderBrief).sort((a, b) => a.stav.localeCompare(b.stav));
+      return { result: { pocet: list.length, objednavky: list.slice(0, f.limit ?? 50) } };
+    },
+  }),
+
+  tool({
+    name: 'vytvor_objednavku',
+    description: 'Vytvorí malú objednávku tovaru pre zákazníka (napr. puzdro, ochranné sklo, nabíjačka).',
+    schema: z.object({
+      zakaznik: customerIn,
+      polozky: z.array(itemIn).min(1),
+      dodavatel: z.string().optional(),
+      zaloha: money.optional(),
+      ocakavane_dorucenie: ymd.optional(),
+      poznamka: z.string().optional(),
+    }),
+    label: (i) => `Vytváram objednávku – ${i.polozky.map((p) => p.nazov).join(', ')}`,
+    run: async (i, ctx) => {
+      const customer = await ensureCustomer({ id: i.zakaznik.id, name: i.zakaznik.meno, phone: i.zakaznik.telefon, email: i.zakaznik.email });
+      const { seq, number } = await nextNumber('orders', ctx.settings.orderPrefix);
+      const items = i.polozky.map((x) => toItem({ ...x, typ: x.typ ?? 'tovar' }, 'tovar'));
+      const data = {
+        number,
+        seq,
+        status: 'nova',
+        customerId: customer.id,
+        customer,
+        items,
+        ...totals(items),
+        supplier: i.dodavatel ?? '',
+        deposit: i.zaloha ?? 0,
+        paid: false,
+        paymentMethod: null,
+        paidAt: null,
+        expectedAt: i.ocakavane_dorucenie ? Timestamp.fromDate(endOfLocalDay(i.ocakavane_dorucenie)) : null,
+        orderedAt: null,
+        deliveredAt: null,
+        notes: i.poznamka ?? '',
+        keywords: orderKeywords({ number, customer, supplier: i.dodavatel, items }),
+        history: [history(ctx.actor, 'Objednávka vytvorená AI asistentom')],
+        createdBy: ctx.actor,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        closedAt: null,
+      };
+      const ref = await db().collection('orders').add(data);
+      return { result: { ok: true, id: ref.id, cislo: number, suma: data.total }, action: { label: `Vytvorená objednávka ${number}`, link: `/objednavky/${ref.id}` } };
+    },
+  }),
+
+  tool({
+    name: 'uprav_objednavku',
+    description: 'Upraví objednávku: stav (objednaná, doručená, vydaná…), platba, dodávateľ, očakávané doručenie, poznámka, ďalšie položky.',
+    schema: z.object({
+      objednavka: z.string().describe('Číslo objednávky (napr. „O-1012“) alebo ID.'),
+      stav: orderStatus.optional(),
+      zaplatene: z.boolean().optional(),
+      sposob_platby: payment.optional(),
+      dodavatel: z.string().optional(),
+      ocakavane_dorucenie: ymd.optional(),
+      poznamka: z.string().optional(),
+      pridaj_polozky: z.array(itemIn).optional(),
+    }),
+    label: (i) => `Upravujem objednávku ${i.objednavka}`,
+    run: async (i, ctx) => {
+      const snap = await findByNumber('orders', i.objednavka, ctx.settings.orderPrefix);
+      if (!snap) return notFound('Objednávka');
+      const o = snap.data()!;
+      const update: DocumentData = { updatedAt: FieldValue.serverTimestamp() };
+      const notes: string[] = [];
+      if (i.stav && i.stav !== o.status) {
+        update.status = i.stav;
+        if (i.stav === 'objednana' && !o.orderedAt) update.orderedAt = FieldValue.serverTimestamp();
+        if (i.stav === 'dorucena' && !o.deliveredAt) update.deliveredAt = FieldValue.serverTimestamp();
+        update.closedAt = i.stav === 'vydana' || i.stav === 'zrusena' ? FieldValue.serverTimestamp() : null;
+        notes.push(`Stav: ${ORDER_LABEL[o.status]} → ${ORDER_LABEL[i.stav]}`);
+      }
+      if (i.zaplatene !== undefined) {
+        update.paid = i.zaplatene;
+        update.paidAt = i.zaplatene ? FieldValue.serverTimestamp() : null;
+        if (i.zaplatene) notes.push('Zaplatené');
+      }
+      if (i.sposob_platby) update.paymentMethod = i.sposob_platby;
+      if (i.dodavatel !== undefined) update.supplier = i.dodavatel;
+      if (i.ocakavane_dorucenie) update.expectedAt = Timestamp.fromDate(endOfLocalDay(i.ocakavane_dorucenie));
+      if (i.poznamka !== undefined) update.notes = i.poznamka;
+      if (i.pridaj_polozky?.length) {
+        const items = [...(o.items ?? []), ...i.pridaj_polozky.map((x) => toItem(x, 'tovar'))];
+        Object.assign(update, { items, ...totals(items) });
+        notes.push(`Pridané: ${i.pridaj_polozky.map((x) => x.nazov).join(', ')}`);
+      }
+      if (i.dodavatel !== undefined || i.pridaj_polozky?.length) {
+        update.keywords = orderKeywords({ ...o, supplier: update.supplier ?? o.supplier, items: update.items ?? o.items });
+      }
+      notes.push('(upravené AI asistentom)');
+      update.history = FieldValue.arrayUnion(...notes.map((t) => history(ctx.actor, t)));
+      await snap.ref.update(update);
+      return { result: { ok: true, objednavka: orderBrief(await snap.ref.get()) }, action: { label: `Upravená objednávka ${o.number}`, link: `/objednavky/${snap.id}` } };
+    },
+  }),
+
+  tool({
+    name: 'zakaznik',
+    description: 'Detail zákazníka vrátane histórie zákaziek a objednávok a celkovej útraty.',
+    schema: z.object({ zakaznik: z.string().describe('ID zákazníka, meno alebo telefón.') }),
+    label: (i) => `Hľadám zákazníka ${i.zakaznik}`,
+    run: async ({ zakaznik }) => {
+      let snap = await db().collection('customers').doc(zakaznik).get().catch(() => null);
+      if (!snap?.exists) {
+        const found = await textSearch('customers', zakaznik, (c) => [c.name, c.phone, c.email, c.company], 5);
+        if (found.length > 1) return { result: { viac_zhod: found.map((c) => ({ id: c.id, meno: c.data().name, telefon: c.data().phone })) } };
+        snap = found[0] ?? null;
+      }
+      if (!snap?.exists) return notFound('Zákazník');
+      const c = snap.data()!;
+      const [repairs, orders] = await Promise.all([
+        db().collection('repairs').where('customerId', '==', snap.id).orderBy('createdAt', 'desc').limit(30).get(),
+        db().collection('orders').where('customerId', '==', snap.id).orderBy('createdAt', 'desc').limit(30).get(),
+      ]);
+      const spent =
+        repairs.docs.filter((d) => d.data().status === 'vydane').reduce((s, d) => s + repairSum(d.data()), 0) +
+        orders.docs.filter((d) => d.data().status === 'vydana').reduce((s, d) => s + (d.data().total || 0), 0);
+      return {
+        result: {
+          id: snap.id,
+          meno: c.name,
+          telefon: c.phone,
+          email: c.email,
+          firma: c.company,
+          ico: c.ico,
+          adresa: c.address,
+          poznamka: c.note,
+          utratil_spolu: round2(spent),
+          zakazky: repairs.docs.map(repairBrief),
+          objednavky: orders.docs.map(orderBrief),
+        },
+        action: { label: `Zákazník ${c.name}`, link: `/zakaznici/${snap.id}` },
+      };
+    },
+  }),
+
+  tool({
+    name: 'uloz_zakaznika',
+    description: 'Vytvorí nového zákazníka alebo upraví kontaktné údaje existujúceho (s ID).',
+    schema: z.object({
+      id: z.string().optional(),
+      meno: z.string(),
+      telefon: z.string().optional(),
+      email: z.string().optional(),
+      firma: z.string().optional(),
+      ico: z.string().optional(),
+      dic: z.string().optional(),
+      adresa: z.string().optional(),
+      poznamka: z.string().optional(),
+    }),
+    label: (i) => `Ukladám zákazníka ${i.meno}`,
+    run: async (i) => {
+      const data: DocumentData = { name: i.meno.trim(), updatedAt: FieldValue.serverTimestamp() };
+      const map: [keyof typeof i, string][] = [
+        ['telefon', 'phone'],
+        ['email', 'email'],
+        ['firma', 'company'],
+        ['ico', 'ico'],
+        ['dic', 'dic'],
+        ['adresa', 'address'],
+        ['poznamka', 'note'],
+      ];
+      for (const [from, to] of map) if (i[from] !== undefined) data[to] = i[from];
+      const col = db().collection('customers');
+      let id = i.id;
+      if (id) {
+        const prev = (await col.doc(id).get()).data() ?? {};
+        data.keywords = customerKeywords({ ...prev, ...data });
+        await col.doc(id).set(data, { merge: true });
+      } else {
+        data.keywords = customerKeywords(data);
+        data.createdAt = FieldValue.serverTimestamp();
+        id = (await col.add({ phone: '', email: '', company: '', ico: '', dic: '', address: '', note: '', ...data })).id;
+      }
+      return { result: { ok: true, id }, action: { label: `Zákazník ${i.meno}`, link: `/zakaznici/${id}` } };
+    },
+  }),
+
+  tool({
+    name: 'kalendar',
+    description: 'Udalosti, práce a úlohy v kalendári pre zadané obdobie spolu s termínmi dokončenia otvorených zákaziek.',
+    schema: z.object({ od: ymd, do: ymd }),
+    label: (i) => `Pozerám kalendár ${i.od}${i.do !== i.od ? ` – ${i.do}` : ''}`,
+    run: async ({ od, do: to }) => {
+      const from = startOfLocalDay(od);
+      const until = endOfLocalDay(to);
+      const [events, repairs] = await Promise.all([
+        db().collection('events').where('start', '>=', from).where('start', '<=', until).get(),
+        db().collection('repairs').where('status', 'in', OPEN_REPAIR).get(),
+      ]);
+      return {
+        result: {
+          udalosti: events.docs.map(eventBrief).sort((a, b) => (a.datum + a.cas).localeCompare(b.datum + b.cas)),
+          terminy_zakaziek: repairs.docs
+            .map(repairBrief)
+            .filter((r) => r.termin && r.termin >= od && r.termin <= to)
+            .map((r) => ({ termin: r.termin, cislo: r.cislo, zariadenie: r.zariadenie, zakaznik: r.zakaznik, stav: r.stav_popis })),
+        },
+      };
+    },
+  }),
+
+  tool({
+    name: 'pridaj_do_kalendara',
+    description: 'Pridá udalosť alebo úlohu do kalendára (práca na oprave, termín so zákazníkom, úloha, osobné).',
+    schema: z.object({
+      nazov: z.string(),
+      typ: z.enum(['praca', 'termin', 'uloha', 'osobne']).describe('uloha = úloha na splnenie (to-do)'),
+      datum: ymd,
+      cas_od: hm.optional().describe('Bez času = celodenná položka.'),
+      trvanie_min: z.number().int().min(5).max(24 * 60).optional(),
+      zakazka: z.string().optional().describe('Číslo súvisiacej zákazky.'),
+      poznamka: z.string().optional(),
+    }),
+    label: (i) => `Pridávam do kalendára: ${i.nazov}`,
+    run: async (i, ctx) => {
+      let repair: DocumentSnapshot | null = null;
+      if (i.zakazka) repair = await findByNumber('repairs', i.zakazka, ctx.settings.repairPrefix);
+      const allDay = !i.cas_od;
+      const start = allDay ? startOfLocalDay(i.datum) : localToDate(i.datum, i.cas_od);
+      const end = allDay ? endOfLocalDay(i.datum) : new Date(start.getTime() + (i.trvanie_min ?? 60) * 60000);
+      const ref = await db()
+        .collection('events')
+        .add({
+          title: i.nazov,
+          type: i.typ,
+          start: Timestamp.fromDate(start),
+          end: Timestamp.fromDate(end),
+          allDay,
+          done: false,
+          repairId: repair?.id ?? null,
+          repairNumber: repair?.data()?.number ?? null,
+          orderId: null,
+          orderNumber: null,
+          notes: i.poznamka ?? '',
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      return {
+        result: { ok: true, id: ref.id, datum: i.datum, cas: allDay ? 'celý deň' : `${localHm(start)}–${localHm(end)}` },
+        action: { label: `${i.typ === 'uloha' ? 'Úloha' : 'Kalendár'}: ${i.nazov} (${fmtLocal(start, !allDay)})`, link: '/kalendar' },
+      };
+    },
+  }),
+
+  tool({
+    name: 'uprav_v_kalendari',
+    description: 'Upraví, presunie, označí ako splnenú alebo odstráni udalosť či úlohu v kalendári (ID získaš cez nástroj kalendar alebo prehlad_dna).',
+    schema: z.object({
+      id: z.string(),
+      nazov: z.string().optional(),
+      datum: ymd.optional(),
+      cas_od: hm.optional(),
+      trvanie_min: z.number().int().min(5).max(24 * 60).optional(),
+      splnene: z.boolean().optional(),
+      poznamka: z.string().optional(),
+      odstranit: z.boolean().optional(),
+    }),
+    label: () => 'Upravujem kalendár',
+    run: async (i) => {
+      const ref = db().collection('events').doc(i.id);
+      const snap = await ref.get();
+      if (!snap.exists) return notFound('Udalosť');
+      const e = snap.data()!;
+      if (i.odstranit) {
+        await ref.delete();
+        return { result: { ok: true, odstranene: e.title }, action: { label: `Odstránené z kalendára: ${e.title}`, link: '/kalendar' } };
+      }
+      const update: DocumentData = { updatedAt: FieldValue.serverTimestamp() };
+      if (i.nazov) update.title = i.nazov;
+      if (i.splnene !== undefined) update.done = i.splnene;
+      if (i.poznamka !== undefined) update.notes = i.poznamka;
+      if (i.datum || i.cas_od || i.trvanie_min) {
+        const oldStart = (e.start as Timestamp).toDate();
+        const oldDur = (e.end as Timestamp).toMillis() - (e.start as Timestamp).toMillis();
+        const day = i.datum ?? localYmd(oldStart);
+        const allDay = i.cas_od ? false : e.allDay;
+        const start = allDay ? startOfLocalDay(day) : localToDate(day, i.cas_od ?? localHm(oldStart));
+        const end = allDay ? endOfLocalDay(day) : new Date(start.getTime() + (i.trvanie_min ? i.trvanie_min * 60000 : oldDur));
+        Object.assign(update, { start: Timestamp.fromDate(start), end: Timestamp.fromDate(end), allDay });
+      }
+      await ref.update(update);
+      return { result: { ok: true, udalost: eventBrief(await ref.get()) }, action: { label: `Upravené: ${i.nazov ?? e.title}`, link: '/kalendar' } };
+    },
+  }),
+
+  tool({
+    name: 'statistiky',
+    description: 'Tržby, náklady, zisk, počty zákaziek a objednávok, najčastejšie opravy a značky za obdobie. Tržby = vydané zákazky a objednávky podľa dátumu vydania.',
+    schema: z.object({ od: ymd, do: ymd }),
+    label: (i) => `Počítam štatistiky ${i.od} – ${i.do}`,
+    run: async ({ od, do: to }) => {
+      const from = startOfLocalDay(od);
+      const until = endOfLocalDay(to);
+      const [closedR, closedO, created] = await Promise.all([
+        db().collection('repairs').where('closedAt', '>=', from).where('closedAt', '<=', until).get(),
+        db().collection('orders').where('closedAt', '>=', from).where('closedAt', '<=', until).get(),
+        db().collection('repairs').where('createdAt', '>=', from).where('createdAt', '<=', until).get(),
+      ]);
+      const rs = closedR.docs.map((d) => d.data()).filter((r) => r.status === 'vydane');
+      const os = closedO.docs.map((d) => d.data()).filter((o) => o.status === 'vydana');
+      const rRev = rs.reduce((s, r) => s + repairSum(r), 0);
+      const rCost = rs.reduce((s, r) => s + (r.totalCost || 0), 0);
+      const oRev = os.reduce((s, o) => s + (o.total || 0), 0);
+      const oCost = os.reduce((s, o) => s + (o.totalCost || 0), 0);
+      const count = (arr: string[]) =>
+        Object.entries(arr.reduce<Record<string, number>>((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {}))
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 8);
+      const days = rs
+        .map((r) => ((r.closedAt as Timestamp).toMillis() - (r.createdAt as Timestamp).toMillis()) / 86400000)
+        .filter((d) => d >= 0);
+      return {
+        result: {
+          obdobie: `${od} – ${to}`,
+          trzby_spolu: round2(rRev + oRev),
+          zisk_spolu: round2(rRev + oRev - rCost - oCost),
+          servis: { vydane_zakazky: rs.length, trzby: round2(rRev), naklady: round2(rCost), priemerna_zakazka: rs.length ? round2(rRev / rs.length) : 0 },
+          objednavky: { vydane: os.length, trzby: round2(oRev), naklady: round2(oCost) },
+          prijate_zakazky: created.size,
+          zrusene_zakazky: closedR.docs.filter((d) => d.data().status === 'zrusene').length,
+          priemerna_doba_opravy_dni: days.length ? round2(days.reduce((a, b) => a + b, 0) / days.length) : null,
+          najcastejsie_opravy: count(rs.flatMap((r) => (r.items ?? []).filter((i: LineItem) => i.kind !== 'diel').map((i: LineItem) => i.name))),
+          znacky: count(rs.map((r) => r.device?.brand || 'neuvedené')),
+          nezaplatene_vydane: rs.filter((r) => !r.paid).map((r) => r.number),
+        },
+      };
+    },
+  }),
+
+  tool({
+    name: 'cennik',
+    description: 'Vyhľadá položky v cenníku (ceny opráv a tovaru s nákupnými cenami).',
+    schema: z.object({ hladaj: z.string().optional().describe('Bez textu vráti celý cenník (max 200 položiek).') }),
+    label: (i) => (i.hladaj ? `Hľadám v cenníku „${i.hladaj}“` : 'Načítavam cenník'),
+    run: async ({ hladaj }) => {
+      const snap = await db().collection('priceList').limit(500).get();
+      const list = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }) as DocumentData)
+        .filter((p) => !hladaj || matches([p.name, p.category, p.note], hladaj))
+        .slice(0, 200)
+        .map((p) => ({ id: p.id, nazov: p.name, kategoria: p.category, cena: p.price, nakup: p.cost, poznamka: p.note || undefined }));
+      return { result: { pocet: list.length, polozky: list } };
+    },
+  }),
+
+  tool({
+    name: 'uloz_do_cennika',
+    description: 'Pridá novú položku do cenníka alebo upraví existujúcu (s ID).',
+    schema: z.object({ id: z.string().optional(), nazov: z.string(), kategoria: z.string().optional(), cena: money, nakup: money.optional(), poznamka: z.string().optional() }),
+    label: (i) => `Ukladám do cenníka: ${i.nazov}`,
+    run: async (i) => {
+      const data = {
+        name: i.nazov,
+        category: i.kategoria ?? 'Ostatné',
+        price: i.cena,
+        cost: i.nakup ?? 0,
+        note: i.poznamka ?? '',
+        keywords: buildKeywords(i.nazov, i.kategoria),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      const col = db().collection('priceList');
+      const id = i.id ? (await col.doc(i.id).set(data, { merge: true }), i.id) : (await col.add(data)).id;
+      return { result: { ok: true, id }, action: { label: `Cenník: ${i.nazov} – ${i.cena} €`, link: '/cennik' } };
+    },
+  }),
+];
+
+export type AnyTool = (typeof TOOLS)[number];
+export const toolByName = new Map<string, AnyTool>(TOOLS.map((t) => [t.name, t as AnyTool]));

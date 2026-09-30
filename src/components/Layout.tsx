@@ -1,198 +1,303 @@
-import React, { useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import VoiceAssistant from './VoiceAssistant';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import {
+  CalendarDays,
+  CalendarPlus,
+  LayoutDashboard,
+  ListTodo,
+  LogOut,
+  Menu,
+  Moon,
+  Package,
+  PackagePlus,
+  Plus,
+  Search,
+  Sparkles,
+  Sun,
+  UserPlus,
+  WifiOff,
+  Wrench,
+} from 'lucide-react';
+import { useAuth } from '@/features/auth';
+import { useData } from '@/features/data';
+import { useIsDesktop, useOnline } from '@/lib/hooks';
+import { NAV } from './nav';
+import { Avatar, Button, IconButton, Kbd, Modal, cx } from './ui';
+import { CommandPalette } from './CommandPalette';
+import { AssistantChat } from '@/features/assistant/AssistantChat';
+import { useTheme } from '@/features/theme';
 
-export default function Layout() {
+interface ShellApi {
+  openSearch: () => void;
+  openAssistant: (prompt?: string) => void;
+  openQuickCreate: () => void;
+}
+const ShellContext = createContext<ShellApi | null>(null);
+export const useShell = () => {
+  const ctx = useContext(ShellContext);
+  if (!ctx) throw new Error('useShell mimo Layout');
+  return ctx;
+};
+
+export function Layout() {
+  const { user, member, signOut } = useAuth();
+  const { repairs, orders } = useData();
+  const isDesktop = useIsDesktop();
+  const online = useOnline();
+  const navigate = useNavigate();
   const location = useLocation();
-  const isSmallOrders = location.pathname === '/small-orders';
-  const [showNotifications, setShowNotifications] = useState(false);
+  const { resolved, toggle } = useTheme();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [assistant, setAssistant] = useState<{ open: boolean; prompt?: string; key: number }>({ open: false, key: 0 });
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const openRepairs = repairs.filter((r) => r.status !== 'vydane' && r.status !== 'zrusene').length;
+  const openOrders = orders.filter((o) => o.status !== 'vydana' && o.status !== 'zrusena').length;
+  const counts: Record<string, number> = { '/zakazky': openRepairs, '/objednavky': openOrders };
+
+  const api: ShellApi = {
+    openSearch: () => setSearchOpen(true),
+    openAssistant: (prompt) => {
+      if (!isDesktop) {
+        navigate('/asistent', { state: { prompt } });
+        return;
+      }
+      setAssistant((a) => ({ open: true, prompt, key: prompt ? a.key + 1 : a.key }));
+    },
+    openQuickCreate: () => setQuickOpen(true),
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const typing = /INPUT|TEXTAREA|SELECT/.test(target.tagName) || target.isContentEditable;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if (!typing && e.key === '/') {
+        e.preventDefault();
+        setSearchOpen(true);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        api.openAssistant();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  useEffect(() => setMenuOpen(false), [location.pathname]);
+
+  const name = member?.name || user?.displayName || user?.email || '';
 
   return (
-    <div className="relative flex h-screen w-full flex-col overflow-hidden bg-background-light dark:bg-background-dark pb-16 lg:pb-0">
-      {/* Header */}
-      <header className="flex flex-none items-center justify-between whitespace-nowrap border-b border-solid border-slate-200 dark:border-surface-dark px-6 lg:px-10 py-3 bg-white dark:bg-background-dark z-50">
-        <div className="flex items-center gap-8">
-          <div className="flex items-center gap-4 text-slate-900 dark:text-white">
-            <div className="size-8 flex items-center justify-center rounded bg-primary/10 text-primary">
-              <span className="material-symbols-outlined">handyman</span>
+    <ShellContext.Provider value={api}>
+      <div className="flex h-dvh overflow-hidden">
+        {/* Bočný panel – počítač */}
+        <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-surface lg:flex">
+          <div className="flex h-16 items-center gap-2.5 px-5">
+            <Logo />
+            <div className="leading-tight">
+              <div className="font-bold tracking-tight">ChrisStop</div>
+              <div className="text-xs text-muted">Servis</div>
             </div>
-            <h2 className="text-lg font-bold leading-tight tracking-[-0.015em]">ChrisStop Servis</h2>
           </div>
-          
-          {/* Top Nav for Small Orders view */}
-          {isSmallOrders && (
-            <nav className="hidden lg:flex items-center gap-9">
-              <NavLink to="/repairs" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Opravy</NavLink>
-              <NavLink to="/planner" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Plánovanie</NavLink>
-              <NavLink to="/small-orders" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Malé objednávky</NavLink>
-            </nav>
-          )}
-
-          {/* Top Nav for other views (from Dashboard HTML) */}
-          {!isSmallOrders && (
-             <label className="hidden md:flex flex-col min-w-40 !h-10 max-w-64">
-              <div className="flex w-full flex-1 items-stretch rounded-lg h-full bg-slate-100 dark:bg-surface-dark">
-                <div className="text-slate-500 dark:text-text-secondary flex border-none items-center justify-center pl-4 rounded-l-lg border-r-0">
-                  <span className="material-symbols-outlined text-[20px]">search</span>
-                </div>
-                <input className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-lg focus:outline-0 focus:ring-0 border-none bg-transparent focus:border-none h-full placeholder:text-slate-400 dark:placeholder:text-text-secondary px-4 rounded-l-none border-l-0 pl-2 text-sm font-normal leading-normal text-slate-900 dark:text-white" placeholder="Hľadať..." />
-              </div>
-            </label>
-          )}
-        </div>
-
-        <div className="flex flex-1 justify-end gap-6 items-center">
-          {!isSmallOrders && (
-            <nav className="hidden lg:flex items-center gap-6">
-              <NavLink to="/" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Dashboard</NavLink>
-              <NavLink to="/repairs" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Opravy</NavLink>
-              <NavLink to="/customers" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Zákazníci</NavLink>
-              <NavLink to="/planner" className={({isActive}) => `text-sm font-medium leading-normal transition-colors ${isActive ? 'text-primary dark:text-white border-b-2 border-primary pb-0.5' : 'text-slate-600 dark:text-text-secondary hover:text-primary dark:hover:text-white'}`}>Kalendár</NavLink>
-            </nav>
-          )}
-          
-          {isSmallOrders && (
-             <label className="hidden md:flex flex-col min-w-40 !h-10 max-w-64">
-              <div className="flex w-full flex-1 items-stretch rounded-lg h-full bg-slate-100 dark:bg-surface-dark">
-                <div className="text-slate-500 dark:text-text-secondary flex border-none items-center justify-center pl-4 rounded-l-lg border-r-0">
-                  <span className="material-symbols-outlined text-[20px]">search</span>
-                </div>
-                <input className="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-lg focus:outline-0 focus:ring-0 border-none bg-transparent focus:border-none h-full placeholder:text-slate-400 dark:placeholder:text-text-secondary px-4 rounded-l-none border-l-0 pl-2 text-sm font-normal leading-normal text-slate-900 dark:text-white" placeholder="Hľadať..." />
-              </div>
-            </label>
-          )}
-
-          <div className="flex gap-2">
-            {!isSmallOrders && (
-              <NavLink to="/repairs/new" className="hidden sm:flex min-w-[84px] cursor-pointer items-center justify-center overflow-hidden rounded-lg h-9 px-4 bg-primary hover:bg-primary/90 text-white text-sm font-bold leading-normal tracking-[0.015em] transition-colors shadow-sm">
-                <span className="truncate">Nová oprava</span>
+          <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
+            {NAV.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className={({ isActive }) =>
+                  cx(
+                    'flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+                    isActive ? 'bg-primary-soft text-primary' : 'text-muted hover:bg-surface-2 hover:text-fg',
+                  )
+                }
+              >
+                <item.icon className="size-[18px]" />
+                <span className="flex-1">{item.label}</span>
+                {!!counts[item.to] && <span className="rounded-md bg-surface-2 px-1.5 text-xs text-muted tabular">{counts[item.to]}</span>}
               </NavLink>
-            )}
-            {!isSmallOrders && (
-              <NavLink to="/settings" className="flex size-9 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-slate-100 dark:bg-surface-dark text-slate-600 dark:text-white hover:bg-slate-200 dark:hover:bg-[#2d465e] transition-colors">
-                <span className="material-symbols-outlined text-[20px]">settings</span>
-              </NavLink>
-            )}
-            
-            <div className="relative">
-              <button onClick={() => setShowNotifications(!showNotifications)} className="flex size-9 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-slate-100 dark:bg-surface-dark text-slate-600 dark:text-white hover:bg-slate-200 dark:hover:bg-[#2d465e] transition-colors relative">
-                <span className="material-symbols-outlined text-[20px]">notifications</span>
-                <span className="absolute top-2 right-2 size-2 bg-red-500 rounded-full border-2 border-surface-dark"></span>
-              </button>
-              
-              {showNotifications && (
-                <div className="absolute right-0 top-12 w-80 bg-white dark:bg-surface-dark border border-slate-200 dark:border-[#324d67] rounded-xl shadow-lg z-50 p-4 flex flex-col gap-3">
-                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-[#324d67] pb-2">
-                    <h3 className="font-bold text-slate-900 dark:text-white">Notifikácie</h3>
-                    <button onClick={() => setShowNotifications(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-white">
-                      <span className="material-symbols-outlined text-[18px]">close</span>
-                    </button>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <NavLink to="/repairs" onClick={() => setShowNotifications(false)} className="flex gap-3 items-start p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-[#1a2632] transition-colors cursor-pointer">
-                      <div className="size-8 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center shrink-0">
-                        <span className="material-symbols-outlined text-[16px]">warning</span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-sm font-bold text-slate-900 dark:text-white">Urgentná oprava</span>
-                        <span className="text-xs text-slate-500 dark:text-text-secondary">iPhone 13 Pro mešká s opravou.</span>
-                      </div>
-                    </NavLink>
-                    <NavLink to="/small-orders" onClick={() => setShowNotifications(false)} className="flex gap-3 items-start p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-[#1a2632] transition-colors cursor-pointer">
-                      <div className="size-8 rounded-full bg-emerald-500/10 text-emerald-500 flex items-center justify-center shrink-0">
-                        <span className="material-symbols-outlined text-[16px]">inventory_2</span>
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="text-sm font-bold text-slate-900 dark:text-white">Diely doručené</span>
-                        <span className="text-xs text-slate-500 dark:text-text-secondary">Súčiastky pre Samsung S21 dorazili.</span>
-                      </div>
-                    </NavLink>
-                  </div>
-                </div>
-              )}
+            ))}
+          </nav>
+          <div className="flex items-center gap-2 border-t border-line p-3">
+            <Avatar name={name} className="size-8 text-xs" />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{name}</div>
+              <div className="text-xs text-muted">{member?.role === 'owner' ? 'Majiteľ' : 'Člen tímu'}</div>
             </div>
-
-            {isSmallOrders && (
-               <NavLink to="/settings" className="flex size-9 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-slate-100 dark:bg-surface-dark text-slate-600 dark:text-white hover:bg-slate-200 dark:hover:bg-[#2d465e] transition-colors">
-                <span className="material-symbols-outlined text-[20px]">account_circle</span>
-              </NavLink>
-            )}
+            <IconButton label={resolved === 'dark' ? 'Svetlý režim' : 'Tmavý režim'} size="sm" onClick={toggle}>
+              {resolved === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            </IconButton>
+            <IconButton label="Odhlásiť sa" size="sm" onClick={signOut}>
+              <LogOut className="size-4" />
+            </IconButton>
           </div>
-          {!isSmallOrders && (
-            <div className="bg-center bg-no-repeat aspect-square bg-cover rounded-full size-9 ring-2 ring-slate-200 dark:ring-surface-dark" style={{backgroundImage: 'url("https://lh3.googleusercontent.com/aida-public/AB6AXuBZOUzJkFVON4Uo6urSJCAIuvJm1XCnb0QKBj7sHVSvOAPfF_TLhWEZIrDCWpyjjsjdPcsWWDXkbFM9jNXy34juXGKgQcsbp9qPC4xiUteimD60HhL3UILti6QstVXl8Wn5UtZD-O8_RCYqAxC1Y8JVpPgcJVoKD6liTupF6TA4WvfMCKa_IY_I0LDzqMHBi4cEaR2TjyVYjkLbhaAoKwU4g_gAQTDseq72f0pNXui1Syofs23qyf_x01ASm1CdNAL6Ef8uVyjlQWmB")'}}></div>
-          )}
-        </div>
-      </header>
+        </aside>
 
-      <main className="flex flex-1 overflow-hidden">
-        {/* Sidebar for Dashboard */}
-        {!isSmallOrders && location.pathname === '/' && (
-          <aside className="hidden xl:flex w-64 flex-col border-r border-slate-200 dark:border-surface-dark bg-white dark:bg-[#111a22] p-4 gap-4 justify-between">
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-3 px-4 py-3 mb-4">
-                <div className="bg-center bg-no-repeat aspect-square bg-cover rounded-full size-10 ring-2 ring-primary/20" style={{backgroundImage: 'url("https://lh3.googleusercontent.com/aida-public/AB6AXuBZOUzJkFVON4Uo6urSJCAIuvJm1XCnb0QKBj7sHVSvOAPfF_TLhWEZIrDCWpyjjsjdPcsWWDXkbFM9jNXy34juXGKgQcsbp9qPC4xiUteimD60HhL3UILti6QstVXl8Wn5UtZD-O8_RCYqAxC1Y8JVpPgcJVoKD6liTupF6TA4WvfMCKa_IY_I0LDzqMHBi4cEaR2TjyVYjkLbhaAoKwU4g_gAQTDseq72f0pNXui1Syofs23qyf_x01ASm1CdNAL6Ef8uVyjlQWmB")'}}></div>
-                <div className="flex flex-col">
-                  <span className="text-sm font-bold text-slate-900 dark:text-white">ChrisStop Servis</span>
-                  <span className="text-xs text-slate-500 dark:text-text-secondary">Admin Panel</span>
-                </div>
-              </div>
-
-              <NavLink to="/" className={({isActive}) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-600 dark:text-text-secondary hover:bg-slate-50 dark:hover:bg-surface-dark hover:text-slate-900 dark:hover:text-white'}`}>
-                <span className="material-symbols-outlined">dashboard</span>
-                <span className="text-sm font-medium">Prehľad</span>
-              </NavLink>
-              <NavLink to="/repairs" className={({isActive}) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-600 dark:text-text-secondary hover:bg-slate-50 dark:hover:bg-surface-dark hover:text-slate-900 dark:hover:text-white'}`}>
-                <span className="material-symbols-outlined">build</span>
-                <span className="text-sm font-medium">Opravy</span>
-              </NavLink>
-              <NavLink to="/planner" className={({isActive}) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-600 dark:text-text-secondary hover:bg-slate-50 dark:hover:bg-surface-dark hover:text-slate-900 dark:hover:text-white'}`}>
-                <span className="material-symbols-outlined">calendar_month</span>
-                <span className="text-sm font-medium">Kalendár</span>
-              </NavLink>
-              <NavLink to="/small-orders" className={({isActive}) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-600 dark:text-text-secondary hover:bg-slate-50 dark:hover:bg-surface-dark hover:text-slate-900 dark:hover:text-white'}`}>
-                <span className="material-symbols-outlined">inventory_2</span>
-                <span className="text-sm font-medium">Malé objednávky</span>
-              </NavLink>
-              <NavLink to="/settings" className={({isActive}) => `flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${isActive ? 'bg-primary text-white shadow-md shadow-primary/20' : 'text-slate-600 dark:text-text-secondary hover:bg-slate-50 dark:hover:bg-surface-dark hover:text-slate-900 dark:hover:text-white'}`}>
-                <span className="material-symbols-outlined">settings</span>
-                <span className="text-sm font-medium">Nastavenia</span>
-              </NavLink>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {/* Horná lišta */}
+          <header className="pt-safe z-20 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface/90 px-3 backdrop-blur lg:h-16 lg:px-6">
+            <IconButton label="Menu" className="lg:hidden" onClick={() => setMenuOpen(true)}>
+              <Menu className="size-5" />
+            </IconButton>
+            <div className="flex items-center gap-2 lg:hidden">
+              <Logo small />
+              <span className="font-bold tracking-tight">ChrisStop</span>
             </div>
-            
-            <button className="flex items-center gap-3 px-4 py-3 rounded-xl text-slate-500 dark:text-text-secondary hover:bg-red-50 dark:hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 transition-all mt-auto">
-              <span className="material-symbols-outlined">logout</span>
-              <span className="text-sm font-medium">Odhlásiť sa</span>
+            <button
+              onClick={() => setSearchOpen(true)}
+              className="ml-auto hidden h-10 w-full max-w-md items-center gap-2 rounded-xl border border-line bg-surface-2 px-3 text-sm text-subtle transition-colors hover:border-primary/40 lg:ml-0 lg:flex"
+            >
+              <Search className="size-4" />
+              <span className="flex-1 text-left">Hľadať zákazku, zákazníka, telefón…</span>
+              <Kbd>Ctrl K</Kbd>
             </button>
-          </aside>
-        )}
+            <div className="ml-auto flex items-center gap-1 lg:gap-2">
+              <IconButton label="Hľadať" className="lg:hidden" onClick={() => setSearchOpen(true)}>
+                <Search className="size-5" />
+              </IconButton>
+              <Button variant="soft" icon={<Sparkles className="size-4" />} onClick={() => api.openAssistant()} className="hidden lg:inline-flex">
+                AI asistent
+              </Button>
+              <IconButton label="AI asistent" className="text-primary lg:hidden" onClick={() => api.openAssistant()}>
+                <Sparkles className="size-5" />
+              </IconButton>
+              <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setQuickOpen(true)} className="hidden lg:inline-flex">
+                Nový záznam
+              </Button>
+            </div>
+          </header>
 
-        {/* Main Content */}
-        <div className={`flex-1 overflow-y-auto ${isSmallOrders ? 'flex justify-center py-8 px-4 md:px-10 lg:px-40' : ''}`}>
-          <Outlet />
+          {!online && (
+            <div className="flex items-center justify-center gap-2 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
+              <WifiOff className="size-3.5" /> Ste offline – zmeny sa uložia a odošlú po pripojení.
+            </div>
+          )}
+
+          <main className="flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-7xl px-4 pt-5 pb-28 lg:px-8 lg:pt-7 lg:pb-12">
+              <Outlet />
+            </div>
+          </main>
+
+          {/* Spodná lišta – mobil */}
+          <nav className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 backdrop-blur lg:hidden">
+            <div className="mx-auto grid h-16 max-w-lg grid-cols-5 items-center">
+              <BottomLink to="/" end icon={<LayoutDashboard className="size-5" />} label="Prehľad" />
+              <BottomLink to="/zakazky" icon={<Wrench className="size-5" />} label="Zákazky" count={openRepairs} />
+              <div className="flex justify-center">
+                <button
+                  onClick={() => setQuickOpen(true)}
+                  aria-label="Nový záznam"
+                  className="flex size-13 -translate-y-3 items-center justify-center rounded-2xl bg-primary text-primary-fg shadow-lg shadow-primary/30 active:scale-95"
+                >
+                  <Plus className="size-6" />
+                </button>
+              </div>
+              <BottomLink to="/objednavky" icon={<Package className="size-5" />} label="Objednávky" count={openOrders} />
+              <BottomLink to="/kalendar" icon={<CalendarDays className="size-5" />} label="Kalendár" />
+            </div>
+          </nav>
         </div>
-      </main>
+      </div>
 
-      {/* Mobile Bottom Navigation */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-surface-dark border-t border-slate-200 dark:border-[#324d67] flex items-center justify-around z-40 pb-safe">
-        <NavLink to="/" className={({isActive}) => `flex flex-col items-center gap-1 py-2 px-3 ${isActive ? 'text-primary dark:text-white' : 'text-slate-500 dark:text-text-secondary'}`}>
-          <span className="material-symbols-outlined text-[24px]">dashboard</span>
-          <span className="text-[10px] font-medium">Prehľad</span>
-        </NavLink>
-        <NavLink to="/repairs" className={({isActive}) => `flex flex-col items-center gap-1 py-2 px-3 ${isActive ? 'text-primary dark:text-white' : 'text-slate-500 dark:text-text-secondary'}`}>
-          <span className="material-symbols-outlined text-[24px]">build</span>
-          <span className="text-[10px] font-medium">Opravy</span>
-        </NavLink>
-        <NavLink to="/planner" className={({isActive}) => `flex flex-col items-center gap-1 py-2 px-3 ${isActive ? 'text-primary dark:text-white' : 'text-slate-500 dark:text-text-secondary'}`}>
-          <span className="material-symbols-outlined text-[24px]">calendar_month</span>
-          <span className="text-[10px] font-medium">Kalendár</span>
-        </NavLink>
-        <NavLink to="/small-orders" className={({isActive}) => `flex flex-col items-center gap-1 py-2 px-3 ${isActive ? 'text-primary dark:text-white' : 'text-slate-500 dark:text-text-secondary'}`}>
-          <span className="material-symbols-outlined text-[24px]">inventory_2</span>
-          <span className="text-[10px] font-medium">Objednávky</span>
-        </NavLink>
-      </nav>
+      {/* Mobilné menu */}
+      <Modal open={menuOpen} onClose={() => setMenuOpen(false)} title="Menu" size="sm">
+        <div className="-mx-2 space-y-0.5">
+          {NAV.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                cx('flex items-center gap-3 rounded-xl px-3 py-3 font-medium', isActive ? 'bg-primary-soft text-primary' : 'hover:bg-surface-2')
+              }
+            >
+              <item.icon className="size-5" /> {item.label}
+            </NavLink>
+          ))}
+        </div>
+        <div className="mt-4 flex items-center gap-2 border-t border-line pt-4">
+          <Avatar name={name} className="size-9" />
+          <div className="min-w-0 flex-1 truncate text-sm font-medium">{name}</div>
+          <IconButton label="Prepnúť režim" onClick={toggle}>
+            {resolved === 'dark' ? <Sun className="size-5" /> : <Moon className="size-5" />}
+          </IconButton>
+          <IconButton label="Odhlásiť sa" onClick={signOut}>
+            <LogOut className="size-5" />
+          </IconButton>
+        </div>
+      </Modal>
 
-      <VoiceAssistant />
-    </div>
+      <QuickCreate open={quickOpen} onClose={() => setQuickOpen(false)} />
+      <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} onAsk={(q) => api.openAssistant(q)} />
+
+      {isDesktop && (
+        <Modal open={assistant.open} onClose={() => setAssistant((a) => ({ ...a, open: false }))} title="AI asistent" side="right" size="lg">
+          <div className="-mx-5 -my-4 flex h-[calc(100dvh-4rem)] flex-col">
+            <AssistantChat key={assistant.key} initialPrompt={assistant.prompt} compact />
+          </div>
+        </Modal>
+      )}
+    </ShellContext.Provider>
+  );
+}
+
+function BottomLink({ to, icon, label, end, count }: { to: string; icon: ReactNode; label: string; end?: boolean; count?: number }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) => cx('relative flex flex-col items-center gap-0.5 py-1 text-[11px] font-medium', isActive ? 'text-primary' : 'text-muted')}
+    >
+      {icon}
+      {label}
+      {!!count && (
+        <span className="absolute top-0 right-[calc(50%-20px)] min-w-4 rounded-full bg-primary px-1 text-center text-[10px] leading-4 font-bold text-primary-fg">
+          {count}
+        </span>
+      )}
+    </NavLink>
+  );
+}
+
+export function Logo({ small }: { small?: boolean }) {
+  return (
+    <span className={cx('flex items-center justify-center rounded-xl bg-primary text-primary-fg shadow-sm', small ? 'size-7' : 'size-9')}>
+      <Wrench className={small ? 'size-4' : 'size-5'} strokeWidth={2.4} />
+    </span>
+  );
+}
+
+function QuickCreate({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const navigate = useNavigate();
+  const go = (to: string) => {
+    onClose();
+    navigate(to);
+  };
+  const items = [
+    { icon: <Wrench className="size-5" />, label: 'Nová zákazka', hint: 'Prijatie zariadenia do servisu', to: '/zakazky/nova' },
+    { icon: <PackagePlus className="size-5" />, label: 'Nová objednávka', hint: 'Puzdro, sklo, nabíjačka…', to: '/objednavky?nova=1' },
+    { icon: <CalendarPlus className="size-5" />, label: 'Udalosť v kalendári', hint: 'Termín, práca, stretnutie', to: '/kalendar?nova=termin' },
+    { icon: <ListTodo className="size-5" />, label: 'Úloha', hint: 'Čo treba urobiť', to: '/kalendar?nova=uloha' },
+    { icon: <UserPlus className="size-5" />, label: 'Nový zákazník', hint: 'Kontakt do adresára', to: '/zakaznici?novy=1' },
+  ];
+  return (
+    <Modal open={open} onClose={onClose} title="Vytvoriť" size="sm">
+      <div className="-mx-2 grid gap-1">
+        {items.map((i) => (
+          <button key={i.to} onClick={() => go(i.to)} className="flex items-center gap-3 rounded-xl px-3 py-3 text-left hover:bg-surface-2">
+            <span className="flex size-10 items-center justify-center rounded-xl bg-primary-soft text-primary">{i.icon}</span>
+            <span>
+              <span className="block font-semibold">{i.label}</span>
+              <span className="block text-sm text-muted">{i.hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </Modal>
   );
 }

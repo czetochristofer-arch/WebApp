@@ -1,5 +1,0 @@
-{
-  "name": "ChrisStop Home Application",
-  "description": "Aplikácia pre správu servisu elektroniky s AI hlasovým asistentom pre rýchle zadávanie opráv.",
-  "requestFramePermissions": ["microphone"]
-}
