@@ -3,9 +3,9 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { getDocs, limit, orderBy, query, where } from 'firebase/firestore';
 import { Plus, Search, Wrench } from 'lucide-react';
 import { useData } from '@/features/data';
-import { isRepairOpen, repairAmount } from '@/features/metrics';
+import { isRepairLate, isRepairOpen, repairAmount, watchesDue } from '@/features/metrics';
 import { Button, EmptyState, Input, PageHeader, Segmented, Select, cx } from '@/components/ui';
-import { DueChip, RepairStatusBadge, isOverdue } from '@/components/domain';
+import { DueChip, RepairStatusBadge } from '@/components/domain';
 import { useFeedback } from '@/components/feedback';
 import { REPAIR_STATUSES, priority } from '@/lib/constants';
 import { col, setRepairStatus } from '@/lib/db';
@@ -45,7 +45,7 @@ export function RepairsPage() {
     for (const r of repairs) {
       c[r.status] = (c[r.status] ?? 0) + 1;
       if (isRepairOpen(r)) c.aktivne++;
-      if (isRepairOpen(r) && r.status !== 'hotove' && isOverdue(r.dueAt, true)) c.po_termine++;
+      if (isRepairLate(r)) c.po_termine++;
     }
     return c;
   }, [repairs]);
@@ -59,7 +59,7 @@ export function RepairsPage() {
         case 'aktivne':
           return isRepairOpen(r);
         case 'po_termine':
-          return isRepairOpen(r) && r.status !== 'hotove' && isOverdue(r.dueAt, true);
+          return isRepairLate(r);
         case 'uzavrete':
           return !isRepairOpen(r);
         case 'vsetky':
@@ -181,7 +181,7 @@ export function RepairsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3 align-top">
-                      <DueChip due={r.dueAt} open={isRepairOpen(r) && r.status !== 'hotove'} />
+                      <DueChip due={r.dueAt} open={watchesDue(r)} />
                     </td>
                     <td className="px-4 py-3 text-right align-top">
                       <div className="font-semibold tabular">{repairAmount(r) ? fmtMoney(repairAmount(r)) : '—'}</div>
@@ -208,7 +208,7 @@ export function RepairsPage() {
               <div className="mt-2 flex items-center justify-between gap-2 text-sm">
                 <span className="truncate">{r.customer.name}</span>
                 <span className="flex items-center gap-3">
-                  <DueChip due={r.dueAt} open={isRepairOpen(r) && r.status !== 'hotove'} />
+                  <DueChip due={r.dueAt} open={watchesDue(r)} />
                   {repairAmount(r) ? <b className="tabular">{fmtMoney(repairAmount(r))}</b> : null}
                 </span>
               </div>

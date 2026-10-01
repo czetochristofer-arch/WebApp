@@ -7,6 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { db, FieldValue } from './lib/store.js';
 import { runAgent, type AgentChunk } from './agent/run.js';
+import { publicRepairStatus } from './public.js';
 
 initializeApp();
 setGlobalOptions({ region: 'europe-west1', maxInstances: 5 });
@@ -52,9 +53,23 @@ export const joinWorkspace = onCall({ secrets: [OWNER_EMAILS] }, async (req) => 
   return { role };
 });
 
+/** Verejný stav opravy pre zákazníka – bez prihlásenia (QR kód na protokole, odkaz v SMS). */
+export const repairStatus = onCall({ concurrency: 40, memory: '256MiB' }, async (req) => {
+  const id = z.string().regex(/^[A-Za-z0-9]{10,40}$/).safeParse((req.data as { id?: unknown } | null)?.id);
+  if (!id.success) throw new HttpsError('invalid-argument', 'Neplatný odkaz.');
+  const status = await publicRepairStatus(id.data);
+  if (!status) throw new HttpsError('not-found', 'Zákazka sa nenašla.');
+  return status;
+});
+
 const AgentInput = z.object({
   threadId: z.string().min(1).max(100).nullish(),
   message: z.string().trim().min(1).max(8000),
+  /** Cesty k fotkám v úložisku (agent/{uid}/…), ktoré používateľ priložil. */
+  images: z.array(z.string().regex(/^agent\/[A-Za-z0-9]+\/[\w.-]+$/)).max(4).nullish(),
+  /** Požiadavka zadaná hlasom – odpoveď sa bude čítať nahlas. */
+  voice: z.boolean().nullish(),
+  appUrl: z.string().regex(/^https?:\/\/[^/\s]+$/).max(200).nullish(),
 });
 
 /** AI asistent (Claude) – odpoveď sa posiela postupne (streaming). */
@@ -66,6 +81,9 @@ export const agentChat = onCall<z.infer<typeof AgentInput>, Promise<{ threadId: 
     if (!member.exists) throw new HttpsError('permission-denied', 'Nemáte prístup.');
     const input = AgentInput.safeParse(req.data);
     if (!input.success) throw new HttpsError('invalid-argument', 'Neplatná požiadavka.');
+
+    const images = input.data.images ?? [];
+    if (images.some((p) => !p.startsWith(`agent/${req.auth!.uid}/`))) throw new HttpsError('permission-denied', 'Neplatná fotka.');
 
     const m = member.data()!;
     const actor = `AI asistent (${m.name || m.email})`;
@@ -79,6 +97,9 @@ export const agentChat = onCall<z.infer<typeof AgentInput>, Promise<{ threadId: 
         actor,
         threadId: input.data.threadId ?? undefined,
         message: input.data.message,
+        images,
+        voice: !!input.data.voice,
+        appUrl: input.data.appUrl ?? undefined,
         send,
         signal: res?.signal,
       });

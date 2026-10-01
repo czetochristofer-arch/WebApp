@@ -253,6 +253,7 @@ const tones: Record<Tone, string> = {
   cyan: 'bg-cyan-50 text-cyan-800 dark:bg-cyan-500/15 dark:text-cyan-300',
   green: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
   red: 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300',
+  pink: 'bg-pink-50 text-pink-700 dark:bg-pink-500/15 dark:text-pink-300',
 };
 const dots: Record<Tone, string> = {
   gray: 'bg-stone-400',
@@ -263,6 +264,7 @@ const dots: Record<Tone, string> = {
   cyan: 'bg-cyan-500',
   green: 'bg-emerald-500',
   red: 'bg-red-500',
+  pink: 'bg-pink-500',
 };
 export const toneBorder: Record<Tone, string> = {
   gray: 'border-l-stone-400',
@@ -273,7 +275,9 @@ export const toneBorder: Record<Tone, string> = {
   cyan: 'border-l-cyan-500',
   green: 'border-l-emerald-500',
   red: 'border-l-red-500',
+  pink: 'border-l-pink-500',
 };
+export const toneDot = dots;
 export const toneBg = tones;
 
 export function Badge({ tone = 'gray', children, dot = true, className }: { tone?: Tone; children: ReactNode; dot?: boolean; className?: string }) {

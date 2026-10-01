@@ -44,7 +44,7 @@ export function fillTemplate(tpl: string, vars: Record<string, string>) {
   return tpl.replace(/\{(\w+)\}/g, (_m, k: string) => vars[k] ?? '');
 }
 
-export function ContactButtons({ phone, message, compact }: { phone?: string; message?: string; compact?: boolean }) {
+export function ContactButtons({ phone, message, compact, iconsOnly }: { phone?: string; message?: string; compact?: boolean; iconsOnly?: boolean }) {
   const p = intlPhone(phone);
   if (!p) return null;
   const body = message ? encodeURIComponent(message) : '';
@@ -53,6 +53,26 @@ export function ContactButtons({ phone, message, compact }: { phone?: string; me
     { href: `sms:+${p}${body ? `?&body=${body}` : ''}`, label: 'SMS', icon: <MessageSquare className="size-4" /> },
     { href: `https://wa.me/${p}${body ? `?text=${body}` : ''}`, label: 'WhatsApp', icon: <MessageCircle className="size-4" /> },
   ];
+  if (iconsOnly) {
+    return (
+      <div className="flex shrink-0 gap-1">
+        {links.map((l) => (
+          <a
+            key={l.label}
+            href={l.href}
+            target={l.label === 'WhatsApp' ? '_blank' : undefined}
+            rel="noreferrer"
+            aria-label={l.label}
+            title={l.label}
+            onClick={(e) => e.stopPropagation()}
+            className="flex size-8 items-center justify-center rounded-lg border border-line bg-surface text-muted hover:border-primary/40 hover:text-primary"
+          >
+            {l.icon}
+          </a>
+        ))}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap gap-2">
       {links.map((l) => (

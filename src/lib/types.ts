@@ -33,6 +33,7 @@ export interface Customer {
 }
 
 export type RepairStatus =
+  | 'oznamene'
   | 'prijate'
   | 'diagnostika'
   | 'caka_schvalenie'
@@ -99,7 +100,10 @@ export interface Repair {
   paid: boolean;
   paymentMethod?: PaymentMethod | null;
   paidAt?: Timestamp | null;
-  warrantyDays: number;
+  /** Záruka v mesiacoch (nové zákazky). */
+  warrantyMonths?: number | null;
+  /** Pôvodná záruka v dňoch – len staršie zákazky. */
+  warrantyDays?: number | null;
   dueAt?: Timestamp | null;
   notes?: string;
   internalNotes?: string;
@@ -109,6 +113,8 @@ export interface Repair {
   total: number;
   totalCost: number;
   createdAt: Timestamp;
+  /** Kedy zákazník zariadenie priniesol (pri zákazkách, ktoré začali ako „oznámené“). */
+  receivedAt?: Timestamp | null;
   updatedAt?: Timestamp;
   closedAt?: Timestamp | null;
   createdBy?: string;
@@ -188,10 +194,14 @@ export interface BusinessSettings {
   logoUrl?: string;
   repairPrefix: string;
   orderPrefix: string;
-  defaultWarrantyDays: number;
+  defaultWarrantyMonths: number;
   protocolTerms: string;
   smsReadyTemplate: string;
   smsOrderTemplate: string;
   workdayStart: number;
   workdayEnd: number;
+  /** Model AI asistenta pre nové konverzácie. */
+  agentModel?: AgentModel;
 }
+
+export type AgentModel = 'sonnet' | 'haiku';

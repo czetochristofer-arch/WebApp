@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { addMinutes, differenceInMinutes, endOfDay, format, startOfDay } from 'date-fns';
+import { addDays, addMinutes, differenceInMinutes, endOfDay, format, startOfDay } from 'date-fns';
 import { Timestamp } from 'firebase/firestore';
 import { Trash2 } from 'lucide-react';
 import { useData } from '@/features/data';
 import { isRepairOpen } from '@/features/metrics';
-import { Button, Input, Modal, Segmented, Select, Textarea, Toggle } from '@/components/ui';
+import { Button, Input, Modal, Segmented, Select, Textarea, Toggle, cx } from '@/components/ui';
 import { useFeedback } from '@/components/feedback';
 import { EVENT_TYPES } from '@/lib/constants';
 import { deleteEvent, saveEvent, type EventInput } from '@/lib/db';
@@ -107,9 +107,31 @@ export function EventDialog({ open, onClose, init }: { open: boolean; onClose: (
           onKeyDown={(e) => e.key === 'Enter' && save()}
         />
         <Segmented value={type} onChange={(v) => { setType(v); if (v === 'uloha') setAllDay(true); }} options={EVENT_TYPES.map((t) => ({ id: t.id, label: t.label }))} size="sm" />
-        <div className="grid grid-cols-2 gap-3">
-          <Input label="Dátum" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          {!allDay && <Input label="Čas" type="time" value={time} onChange={(e) => setTime(e.target.value)} step={300} />}
+        <div>
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Dátum" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            {!allDay && <Input label="Čas" type="time" value={time} onChange={(e) => setTime(e.target.value)} step={300} />}
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {[
+              { label: 'Dnes', d: new Date() },
+              { label: 'Zajtra', d: addDays(new Date(), 1) },
+              { label: 'Pozajtra', d: addDays(new Date(), 2) },
+              { label: 'O týždeň', d: addDays(new Date(), 7) },
+            ].map((q) => {
+              const v = format(q.d, 'yyyy-MM-dd');
+              return (
+                <button
+                  key={q.label}
+                  type="button"
+                  onClick={() => setDate(v)}
+                  className={cx('rounded-full border px-2.5 py-0.5 text-xs font-medium', date === v ? 'border-primary bg-primary-soft text-primary' : 'border-line text-muted hover:text-fg')}
+                >
+                  {q.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
         {!allDay && (
           <div>

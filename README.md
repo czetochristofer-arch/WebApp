@@ -6,16 +6,17 @@ Webová aplikácia na riadenie servisu mobilov a elektroniky: zákazky, malé ob
 
 | Časť | Funkcie |
 |---|---|
-| **Prehľad** | Čo treba riešiť: zákazky po termíne, hotové na vyzdvihnutie, diely na objednanie, čakajúce na schválenie, doručené objednávky. Dnešný program, úlohy, tržby mesiaca. |
-| **Zákazky** | Prijatie zariadenia (zákazník, IMEI, kód, príslušenstvo, stav, porucha, fotky), priebeh opravy v stavoch, položky práce a dielov s nákupnou cenou, záloha, termín, priorita, história zmien, vydanie s platbou. |
-| **Tlač** | Preberací protokol s podmienkami servisu, štítok na zariadenie s QR kódom (otvorí zákazku v mobile), výdajka so záručným listom. |
+| **Prehľad** | „Treba vybaviť“ ako farebné dlaždice (po termíne, hotové – zavolať, schválenie ceny, diely, objednávky, oznámené). Rozpracované zákazky ako karty s filtrom podľa stavu, dnešný program, úlohy, tržby mesiaca. |
+| **Zákazky** | Prijatie zariadenia (zákazník, IMEI, kód, príslušenstvo, stav, porucha, fotky) alebo „oznámená“ oprava, keď zákazník zariadenie prinesie neskôr. Priebeh opravy v stavoch, položky práce a dielov s nákupnou cenou, záloha, termín, priorita, história zmien, vydanie s platbou, záruka 12 mesiacov. |
+| **Tlač** | Preberací protokol s podmienkami servisu, štítok na zariadenie a výdajka so záručným listom. QR kód otvorí majiteľovi celú zákazku, zákazníkovi (bez prihlásenia) stránku so stavom opravy. |
+| **Stav opravy pre zákazníka** | Verejná stránka `/stav/…`: stav, priebeh, termín, cena, záruka a kontakt na servis – bez telefónu, IMEI či interných poznámok. Odkaz sa dá poslať SMS-kou (premenná `{odkaz}`). |
 | **Objednávky** | Puzdrá, sklá, nabíjačky…: treba objednať → objednané → doručené → vydané. Dodávateľ, záloha, očakávané doručenie. |
 | **Kontakt** | Tlačidlá Zavolať / SMS / WhatsApp s predvyplnenou správou („zariadenie je hotové“, „objednávka dorazila“, schválenie ceny). |
-| **Kalendár** | Zoznam, deň, týždeň, mesiac. Práca na opravách, termíny so zákazníkmi, úlohy s odškrtávaním, termíny zákaziek. |
+| **Kalendár** | Deň (s pásikom týždňa na mobile), týždeň, mesiac, zoznam. Presun a zmena dĺžky udalosti ťahaním myšou, filter typov, mini kalendár, úlohy s odškrtávaním, termíny zákaziek. |
 | **Zákazníci** | Adresár s históriou zákaziek a objednávok a celkovou útratou. Zákazník sa pri zákazke nájde podľa telefónu alebo vytvorí automaticky. |
 | **Štatistiky** | Tržby, zisk, marža, počet a priemer zákaziek, doba opravy, graf za 12 mesiacov, najčastejšie opravy, značky, spôsoby platby. |
 | **Cenník** | Ceny opráv a tovaru s nákupnými cenami. Vkladajú sa do zákaziek jedným klikom a pozná ich aj AI asistent. |
-| **AI asistent** | Claude so 17 nástrojmi nad dátami aplikácie + vyhľadávaním na webe. Odpovedá na otázky („čo mám dnes robiť“, „aký bol zisk v septembri“), vytvára a upravuje zákazky, objednávky, zákazníkov, udalosti a úlohy. Dá sa mu diktovať hlasom. Mazať nemôže. |
+| **AI asistent** | Claude s 18 nástrojmi nad dátami aplikácie + vyhľadávaním na webe. Odpovedá na otázky („čo mám dnes robiť“, „aký bol zisk v septembri“), vytvára a upravuje zákazky, objednávky, zákazníkov, udalosti a úlohy, pripraví SMS/WhatsApp pre zákazníka, prečíta fotku (štítok, papierový zápis). Hlasom: na povel odpovedá nahlas, hlasový rozhovor bez rúk. Model Sonnet 5.5 alebo úsporný Haiku 4.5 (Nastavenia). Mazať nemôže. |
 | **Tím** | Prihlásenie cez Google alebo e-mail. Prístup má iba majiteľ a pozvaní členovia; mazať a meniť nastavenia firmy môže len majiteľ. |
 | **Ďalšie** | Globálne vyhľadávanie (Ctrl+K), svetlý/tmavý režim, záloha všetkých dát do súboru, nastaviteľné číslovanie nadväzujúce na papierovú evidenciu. |
 
@@ -59,7 +60,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 - **Dáta:** Firestore kolekcie `repairs`, `orders`, `customers`, `events`, `priceList`, `settings`, `counters`, `members`, `invites`, `agentThreads`. Fotky vo Firebase Storage. Pravidlá: `firestore.rules`, `storage.rules`.
 - **Server:** Cloud Functions (Node 22, europe-west1):
   - `joinWorkspace` – po prihlásení overí majiteľa (tajomstvo `OWNER_EMAILS`) alebo pozvánku a vytvorí členstvo,
-  - `agentChat` – AI asistent: Claude (`claude-sonnet-5-5`, adaptívne premýšľanie, automatický záložný model), nástroje v `functions/src/agent/tools.ts`, odpoveď sa streamuje do aplikácie a konverzácie sa ukladajú.
+  - `agentChat` – AI asistent: Claude (`claude-sonnet-5-5`, adaptívne premýšľanie, automatický záložný model; voliteľne `claude-haiku-4-5`), nástroje v `functions/src/agent/tools.ts`, odpoveď sa streamuje do aplikácie a konverzácie sa ukladajú,
+  - `repairStatus` – verejný stav opravy pre zákazníka (bez prihlásenia).
 - **Nasadenie:** GitHub Actions (`.github/workflows/deploy.yml`) → `firebase deploy`.
 
 ## Náklady (orientačne)

@@ -14,6 +14,14 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
     }
 
+    // Fotky poslané AI asistentovi – každý vidí len svoje.
+    match /agent/{uid}/{fileName} {
+      allow read, delete: if request.auth != null && request.auth.uid == uid;
+      allow create: if isMember() && request.auth.uid == uid
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
     match /business/{fileName} {
       allow read: if isMember();
       allow create, update, delete: if isMember()

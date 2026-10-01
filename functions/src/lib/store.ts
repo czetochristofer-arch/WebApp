@@ -1,12 +1,14 @@
 import { getFirestore, FieldValue, Timestamp, type DocumentData } from 'firebase-admin/firestore';
 import { buildKeywords, phoneDigits } from './keywords.js';
+import { localYmd } from './time.js';
 
 export const db = () => getFirestore();
 export { FieldValue, Timestamp };
 
-export const REPAIR_STATUSES = ['prijate', 'diagnostika', 'caka_schvalenie', 'caka_diely', 'v_oprave', 'hotove', 'vydane', 'zrusene'] as const;
-export const OPEN_REPAIR = ['prijate', 'diagnostika', 'caka_schvalenie', 'caka_diely', 'v_oprave', 'hotove'];
+export const REPAIR_STATUSES = ['oznamene', 'prijate', 'diagnostika', 'caka_schvalenie', 'caka_diely', 'v_oprave', 'hotove', 'vydane', 'zrusene'] as const;
+export const OPEN_REPAIR = ['oznamene', 'prijate', 'diagnostika', 'caka_schvalenie', 'caka_diely', 'v_oprave', 'hotove'];
 export const REPAIR_LABEL: Record<string, string> = {
+  oznamene: 'Oznámené – čaká na prinesenie',
   prijate: 'Prijaté',
   diagnostika: 'Diagnostika',
   caka_schvalenie: 'Čaká na schválenie',
@@ -35,6 +37,34 @@ export interface LineItem {
   cost: number;
   partStatus?: string | null;
   supplier?: string;
+}
+
+export const DEFAULT_WARRANTY_MONTHS = 12;
+
+/** Záruka zákazky v mesiacoch alebo dňoch (staršie zákazky s pôvodnou predvolenou zárukou 90 dní dostanú predvolenú záruku). */
+export function warrantyOf(r: DocumentData, defaultMonths: number): { months: number } | { days: number } {
+  if (typeof r.warrantyMonths === 'number') return { months: r.warrantyMonths };
+  if (typeof r.warrantyDays === 'number' && r.warrantyDays !== 90) return { days: r.warrantyDays };
+  return { months: defaultMonths };
+}
+
+export function warrantyText(w: { months: number } | { days: number }) {
+  const plural = (n: number, one: string, few: string, many: string) => (n === 1 ? one : n >= 2 && n <= 4 ? few : many);
+  return 'months' in w ? `${w.months} ${plural(w.months, 'mesiac', 'mesiace', 'mesiacov')}` : `${w.days} ${plural(w.days, 'deň', 'dni', 'dní')}`;
+}
+
+/** Posledný deň záruky (YYYY-MM-DD v slovenskom čase). */
+export function warrantyEndYmd(w: { months: number } | { days: number }, from: Date) {
+  const [y, m, d] = localYmd(from).split('-').map(Number);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if ('days' in w) {
+    const t = new Date(Date.UTC(y, m - 1, d + w.days));
+    return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
+  }
+  // 31. 1. + 1 mesiac = posledný deň februára (ako date-fns addMonths v aplikácii).
+  const first = new Date(Date.UTC(y, m - 1 + w.months, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  return `${first.getUTCFullYear()}-${pad(first.getUTCMonth() + 1)}-${pad(Math.min(d, last))}`;
 }
 
 export const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -68,7 +98,7 @@ export async function getSettings(): Promise<DocumentData> {
     name: 'ChrisStop',
     repairPrefix: 'Z',
     orderPrefix: 'O',
-    defaultWarrantyDays: 90,
+    defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
     vatPayer: false,
     ...(snap.exists ? snap.data() : {}),
   };

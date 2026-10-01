@@ -7,8 +7,12 @@ import {
   CalendarPlus,
   Camera,
   CheckCircle2,
+  Copy,
+  ExternalLink,
   History,
   PackageCheck,
+  PackageOpen,
+  ShieldCheck,
   Printer,
   Save,
   Send,
@@ -28,16 +32,19 @@ import { useShell } from '@/components/Layout';
 import { Badge, Button, Card, IconButton, Input, Modal, PageLoader, Select, cx } from '@/components/ui';
 import { ContactButtons, PhotoGallery, RepairStatusBadge, fillTemplate } from '@/components/domain';
 import { useFeedback } from '@/components/feedback';
-import { PAYMENT_METHODS, REPAIR_STATUSES, eventType, priority } from '@/lib/constants';
+import { PAYMENT_METHODS, REPAIR_STATUSES, eventType, priority, warrantyLabel, warrantyOf, warrantyUntil } from '@/lib/constants';
 import { addRepairNote, deleteRepair, setRepairStatus, updateRepair } from '@/lib/db';
 import { fmtDate, fmtDateTime, fmtDay, fmtMoney, fmtTime } from '@/lib/format';
+import { copyText, statusUrl } from '@/lib/links';
+import { receivedAt } from '@/features/metrics';
 import type { PaymentMethod, Repair } from '@/lib/types';
 
 const DRAFT_KEYS: (keyof RepairDraft)[] = [
-  'customer', 'device', 'problem', 'diagnosis', 'items', 'estimate', 'deposit', 'warrantyDays', 'dueAt', 'priority', 'notes', 'internalNotes',
+  'customer', 'device', 'problem', 'diagnosis', 'items', 'estimate', 'deposit', 'warrantyMonths', 'dueAt', 'priority', 'notes', 'internalNotes',
 ];
 
-function toDraft(r: Repair): RepairDraft {
+function toDraft(r: Repair, defaultMonths: number): RepairDraft {
+  const w = warrantyOf(r, defaultMonths);
   return {
     status: r.status,
     priority: r.priority ?? 'normalna',
@@ -52,7 +59,8 @@ function toDraft(r: Repair): RepairDraft {
     paid: r.paid ?? false,
     paymentMethod: r.paymentMethod ?? null,
     paidAt: r.paidAt ?? null,
-    warrantyDays: r.warrantyDays ?? 90,
+    // Staršie zákazky so zárukou v dňoch sa v editore zobrazia v mesiacoch (zaokrúhlene).
+    warrantyMonths: 'days' in w && w.days !== undefined ? Math.max(1, Math.round(w.days / 30)) : w.months,
     dueAt: r.dueAt ?? null,
     notes: r.notes ?? '',
     internalNotes: r.internalNotes ?? '',
@@ -91,18 +99,18 @@ function RepairDetail({ repair }: { repair: Repair }) {
   const shell = useShell();
   const { run, confirm, toast } = useFeedback();
 
-  const [draft, setDraft] = useState<RepairDraft>(() => toDraft(repair));
-  const [base, setBase] = useState(() => sig(toDraft(repair)));
+  const [draft, setDraft] = useState<RepairDraft>(() => toDraft(repair, settings.defaultWarrantyMonths));
+  const [base, setBase] = useState(() => sig(toDraft(repair, settings.defaultWarrantyMonths)));
   const dirty = sig(draft) !== base;
   const [saving, setSaving] = useState(false);
   const [handover, setHandover] = useState(false);
   const [eventInit, setEventInit] = useState<EventDraftInit | null>(null);
   const [note, setNote] = useState('');
-  const [msgKind, setMsgKind] = useState<'hotovo' | 'schvalenie' | 'prazdna'>('hotovo');
+  const [msgKind, setMsgKind] = useState<'hotovo' | 'schvalenie' | 'odkaz' | 'prazdna'>(repair.status === 'hotove' ? 'hotovo' : 'odkaz');
 
   // Keď sa zákazka zmení inde (iné zariadenie, AI asistent) a tu nič neupravujete, prevezmeme zmeny.
   useEffect(() => {
-    const fresh = toDraft(repair);
+    const fresh = toDraft(repair, settings.defaultWarrantyMonths);
     if (!dirty) {
       setDraft(fresh);
       setBase(sig(fresh));
@@ -129,11 +137,14 @@ function RepairDetail({ repair }: { repair: Repair }) {
   const linkedEvents = useMemo(() => events.filter((e) => e.repairId === repair.id).sort((a, b) => a.start.toMillis() - b.start.toMillis()), [events, repair.id]);
 
   const deviceName = `${repair.device.brand} ${repair.device.model}`.trim();
+  const trackUrl = statusUrl(repair.id);
   const messages = {
-    hotovo: fillTemplate(settings.smsReadyTemplate, { zariadenie: deviceName, cislo: repair.number, cena: fmtMoney(remaining), firma: settings.name }),
+    hotovo: fillTemplate(settings.smsReadyTemplate, { zariadenie: deviceName, cislo: repair.number, cena: fmtMoney(remaining), firma: settings.name, odkaz: trackUrl }),
     schvalenie: `Dobrý deň, k zákazke ${repair.number} (${deviceName}): ${repair.diagnosis || 'diagnostika je hotová'}. Cena opravy: ${fmtMoney(amount)}. Súhlasíte s opravou? ${settings.name}`,
+    odkaz: `Dobrý deň, stav opravy zariadenia ${deviceName} (zákazka ${repair.number}) môžete sledovať tu: ${trackUrl} ${settings.name}`,
     prazdna: '',
   };
+  const warrantyEnd = repair.status === 'vydane' && repair.closedAt ? warrantyUntil(repair, repair.closedAt.toDate(), settings.defaultWarrantyMonths) : null;
 
   const changeStatus = (status: Repair['status']) => {
     if (status === 'vydane') return setHandover(true);
@@ -163,7 +174,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
               {(repair.priority === 'vysoka' || repair.priority === 'urgentna') && <Badge tone={priority(repair.priority).tone}>{priority(repair.priority).label} priorita</Badge>}
             </div>
             <p className="mt-0.5 truncate text-sm text-muted">
-              {deviceName} · {repair.customer.name} · prijaté {fmtDate(repair.createdAt)}
+              {deviceName} · {repair.customer.name} · {repair.status === 'oznamene' ? `oznámené ${fmtDate(repair.createdAt)}` : `prijaté ${fmtDate(receivedAt(repair))}`}
             </p>
           </div>
         </div>
@@ -185,7 +196,16 @@ function RepairDetail({ repair }: { repair: Repair }) {
         </div>
       </div>
 
-      {params.get('nova') && (
+      {params.get('nova') && repair.status === 'oznamene' && (
+        <div className="mb-4 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-500/30 dark:bg-emerald-500/10">
+          <CheckCircle2 className="size-5 shrink-0 text-emerald-600" />
+          <span className="flex-1 font-medium">Zákazka {repair.number} je zapísaná ako oznámená. Protokol a štítok vytlačíte, keď zákazník zariadenie prinesie.</span>
+          <IconButton label="Zavrieť" size="sm" onClick={() => setParams({}, { replace: true })}>
+            <X className="size-4" />
+          </IconButton>
+        </div>
+      )}
+      {params.get('nova') && repair.status !== 'oznamene' && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-500/30 dark:bg-emerald-500/10">
           <CheckCircle2 className="size-5 text-emerald-600" />
           <span className="flex-1 font-medium">Zákazka {repair.number} je uložená. Vytlačte zákazníkovi preberací protokol a na zariadenie štítok.</span>
@@ -198,6 +218,26 @@ function RepairDetail({ repair }: { repair: Repair }) {
           <IconButton label="Zavrieť" size="sm" onClick={() => setParams({}, { replace: true })}>
             <X className="size-4" />
           </IconButton>
+        </div>
+      )}
+
+      {repair.status === 'oznamene' && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-pink-200 bg-pink-50 px-4 py-3 text-sm dark:border-pink-500/30 dark:bg-pink-500/10">
+          <PackageOpen className="size-5 shrink-0 text-pink-600 dark:text-pink-300" />
+          <span className="min-w-48 flex-1">
+            <b>Zákazka je oznámená</b> – zákazník zariadenie ešte neprinesie{repair.dueAt ? `, dohodnuté ${fmtDay(repair.dueAt)}` : ''}. Keď ho prinesie, prijmite ho jedným klikom.
+          </span>
+          <Button
+            size="sm"
+            variant="primary"
+            icon={<PackageCheck className="size-4" />}
+            onClick={async () => {
+              const ok = await run(() => updateRepair(repair, { status: 'prijate' }, 'Zákazník priniesol zariadenie'), 'Zariadenie prijaté');
+              if (ok !== undefined) setParams({ nova: '1' }, { replace: true });
+            }}
+          >
+            Zariadenie prinesené
+          </Button>
         </div>
       )}
 
@@ -266,6 +306,12 @@ function RepairDetail({ repair }: { repair: Repair }) {
                 Tlačiť výdajku
               </Button>
             )}
+            {warrantyEnd && (
+              <p className={cx('mt-3 flex items-center gap-2 rounded-xl px-3 py-2 text-sm', warrantyEnd >= new Date() ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-surface-2 text-muted')}>
+                <ShieldCheck className="size-4 shrink-0" />
+                {warrantyEnd >= new Date() ? `V záruke do ${fmtDate(warrantyEnd)}` : `Záruka skončila ${fmtDate(warrantyEnd)}`}
+              </p>
+            )}
           </Card>
 
           <Card title="Kontaktovať zákazníka">
@@ -274,14 +320,24 @@ function RepairDetail({ repair }: { repair: Repair }) {
                 <Select value={msgKind} onChange={(e) => setMsgKind(e.target.value as typeof msgKind)} aria-label="Typ správy">
                   <option value="hotovo">Hotovo – môže si prísť</option>
                   <option value="schvalenie">Schválenie ceny opravy</option>
+                  <option value="odkaz">Odkaz na sledovanie opravy</option>
                   <option value="prazdna">Bez textu</option>
                 </Select>
-                {messages[msgKind] && <p className="rounded-xl bg-surface-2 p-3 text-sm text-muted">{messages[msgKind]}</p>}
+                {messages[msgKind] && <p className="rounded-xl bg-surface-2 p-3 text-sm break-words text-muted">{messages[msgKind]}</p>}
                 <ContactButtons phone={repair.customer.phone} message={messages[msgKind]} />
               </div>
             ) : (
               <p className="text-sm text-muted">Zákazník nemá zadaný telefón.</p>
             )}
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+              <span className="mr-auto text-xs text-muted">Stránka so stavom opravy pre zákazníka</span>
+              <Button size="sm" variant="ghost" icon={<Copy className="size-4" />} onClick={() => copyText(trackUrl).then((ok) => toast(ok ? 'Odkaz skopírovaný' : trackUrl))}>
+                Kopírovať
+              </Button>
+              <Button size="sm" variant="ghost" icon={<ExternalLink className="size-4" />} onClick={() => window.open(`/stav/${repair.id}`, '_blank')}>
+                Náhľad
+              </Button>
+            </div>
           </Card>
 
           <Card
@@ -358,7 +414,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
         <div className="fixed inset-x-0 bottom-16 z-30 flex justify-center px-4 lg:bottom-6 lg:pl-60">
           <div className="animate-slide-up flex items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-2.5 shadow-xl">
             <span className="text-sm font-medium">Neuložené zmeny</span>
-            <Button size="sm" variant="ghost" onClick={() => setDraft(toDraft(repair))}>
+            <Button size="sm" variant="ghost" onClick={() => setDraft(toDraft(repair, settings.defaultWarrantyMonths))}>
               Zahodiť
             </Button>
             <Button size="sm" variant="primary" icon={<Save className="size-4" />} loading={saving} onClick={save}>
@@ -378,6 +434,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
           print('vydajka');
         }}
         dirtySave={dirty ? save : undefined}
+        defaultMonths={settings.defaultWarrantyMonths}
       />
       <EventDialog open={!!eventInit} init={eventInit} onClose={() => setEventInit(null)} />
     </div>
@@ -400,6 +457,7 @@ function HandoverDialog({
   amount,
   onDone,
   dirtySave,
+  defaultMonths,
 }: {
   open: boolean;
   onClose: () => void;
@@ -407,6 +465,7 @@ function HandoverDialog({
   amount: number;
   onDone: () => void;
   dirtySave?: () => Promise<void>;
+  defaultMonths: number;
 }) {
   const { run } = useFeedback();
   const [method, setMethod] = useState<PaymentMethod>('hotovost');
@@ -470,7 +529,7 @@ function HandoverDialog({
             )}
           </>
         )}
-        <p className="text-xs text-muted">Po vydaní sa otvorí výdajka na tlač so zárukou {repair.warrantyDays} dní.</p>
+        <p className="text-xs text-muted">Po vydaní sa otvorí výdajka na tlač so zárukou {warrantyLabel(repair, defaultMonths)}.</p>
       </div>
     </Modal>
   );

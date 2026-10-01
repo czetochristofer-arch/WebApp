@@ -46,7 +46,8 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
       try {
         const r = await fn();
         if (success) toast(success);
-        return r;
+        // Úspech akcie bez návratovej hodnoty musí byť odlíšiteľný od chyby (tá vracia undefined).
+        return (r === undefined ? true : r) as typeof r;
       } catch (err) {
         console.error(err);
         const msg = err instanceof Error ? err.message : String(err);

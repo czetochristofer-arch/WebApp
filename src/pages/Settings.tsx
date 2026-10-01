@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { getDocs, query } from 'firebase/firestore';
-import { Building2, Download, FileText, LogOut, Palette, Smartphone, Trash2, UserPlus, Users } from 'lucide-react';
+import { Building2, Download, FileText, LogOut, Palette, Smartphone, Sparkles, Trash2, UserPlus, Users, Volume2 } from 'lucide-react';
 import { useAuth } from '@/features/auth';
 import { useData } from '@/features/data';
 import { useTheme, type ThemePref } from '@/features/theme';
@@ -9,7 +9,8 @@ import { useFeedback } from '@/components/feedback';
 import { col, getCounter, inviteMember, removeInvite, removeMember, saveSettings, setCounter } from '@/lib/db';
 import { useLiveQuery } from '@/lib/hooks';
 import { fmtDateTime, toDate } from '@/lib/format';
-import type { BusinessSettings, Member } from '@/lib/types';
+import type { AgentModel, BusinessSettings, Member } from '@/lib/types';
+import { loadVoicePrefs, saveVoicePrefs, Speaker, ttsSupported, unlockSpeech, useVoices, type VoicePrefs } from '@/features/assistant/tts';
 
 export default function SettingsPage() {
   const { isOwner } = useAuth();
@@ -19,6 +20,7 @@ export default function SettingsPage() {
       <div className="space-y-5">
         <BusinessSection />
         <DocumentsSection />
+        <AssistantSection />
         <TeamSection />
         <AppearanceSection />
         <DataSection />
@@ -103,7 +105,7 @@ function DocumentsSection() {
         <div className="grid gap-3 sm:grid-cols-4">
           <Input label="Prefix zákaziek" value={draft.repairPrefix} onChange={(e) => set('repairPrefix', e.target.value.toUpperCase())} />
           <Input label="Prefix objednávok" value={draft.orderPrefix} onChange={(e) => set('orderPrefix', e.target.value.toUpperCase())} />
-          <Input label="Záruka (dni)" inputMode="numeric" value={draft.defaultWarrantyDays} onChange={(e) => set('defaultWarrantyDays', Number(e.target.value) || 0)} />
+          <Input label="Záruka" suffix="mes." inputMode="numeric" value={draft.defaultWarrantyMonths} onChange={(e) => set('defaultWarrantyMonths', Number(e.target.value) || 0)} />
           <div className="grid grid-cols-2 gap-2">
             <Select label="Deň od" value={draft.workdayStart} onChange={(e) => set('workdayStart', Number(e.target.value))}>
               {hours.map((h) => (
@@ -130,7 +132,7 @@ function DocumentsSection() {
         <Textarea label="Podmienky servisu (tlačia sa na preberací protokol)" value={draft.protocolTerms} onChange={(e) => set('protocolTerms', e.target.value)} rows={6} />
         <Textarea
           label="SMS – zariadenie je hotové"
-          hint="Premenné: {zariadenie} {cislo} {cena} {firma}"
+          hint="Premenné: {zariadenie} {cislo} {cena} {firma} {odkaz} (odkaz na stav opravy)"
           value={draft.smsReadyTemplate}
           onChange={(e) => set('smsReadyTemplate', e.target.value)}
           rows={2}
@@ -163,6 +165,106 @@ function CounterInput({ label, kind, value, prefix }: { label: string; kind: 're
         </Button>
       )}
     </div>
+  );
+}
+
+const MODELS: { id: AgentModel; title: string; text: string }[] = [
+  { id: 'sonnet', title: 'Claude Sonnet 5.5 – najpresnejší', text: 'Odporúčané. Spoľahlivo zapisuje zákazky a rozumie aj zložitejším požiadavkám.' },
+  { id: 'haiku', title: 'Claude Haiku 4.5 – úsporný', text: 'Približne o polovicu lacnejší a rýchlejší, na zložitejšie úlohy slabší.' },
+];
+
+function AssistantSection() {
+  const { isOwner } = useAuth();
+  const { settings } = useData();
+  const { run } = useFeedback();
+  const voices = useVoices();
+  const [prefs, setPrefs] = useState<VoicePrefs>(loadVoicePrefs);
+  const [speaker] = useState(() => new Speaker());
+  const update = (p: Partial<VoicePrefs>) => {
+    const next = { ...prefs, ...p };
+    setPrefs(next);
+    saveVoicePrefs(next);
+  };
+  const model = settings.agentModel ?? 'sonnet';
+  return (
+    <Card title="AI asistent" icon={<Sparkles className="size-4" />}>
+      <div className="space-y-5">
+        <div>
+          <p className="mb-2 text-[13px] font-medium text-muted">Model pre nové konverzácie</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {MODELS.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                disabled={!isOwner}
+                onClick={() => m.id !== model && run(() => saveSettings({ agentModel: m.id }), 'Model zmenený – platí pre nové konverzácie')}
+                className={`rounded-xl border p-3 text-left transition-colors disabled:cursor-default ${model === m.id ? 'border-primary bg-primary-soft' : 'border-line hover:border-primary/40'}`}
+              >
+                <span className="block text-sm font-semibold">{m.title}</span>
+                <span className="mt-0.5 block text-xs text-muted">{m.text}</span>
+              </button>
+            ))}
+          </div>
+          {!isOwner && <p className="mt-2 text-xs text-muted">Model môže meniť iba majiteľ.</p>}
+        </div>
+
+        <div className="border-t border-line pt-4">
+          <p className="mb-2 flex items-center gap-2 text-[13px] font-medium text-muted">
+            <Volume2 className="size-4" /> Hlasové odpovede (nastavenie tohto zariadenia)
+          </p>
+          {ttsSupported() ? (
+            <div className="space-y-3">
+              <Segmented<VoicePrefs['autoRead']>
+                value={prefs.autoRead}
+                onChange={(v) => update({ autoRead: v })}
+                options={[
+                  { id: 'voice', label: 'Keď hovorím' },
+                  { id: 'always', label: 'Vždy' },
+                  { id: 'off', label: 'Nikdy' },
+                ]}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Select label="Hlas" value={prefs.voiceURI ?? voices[0]?.voiceURI ?? ''} onChange={(e) => update({ voiceURI: e.target.value })}>
+                  {voices.length === 0 && <option value="">Predvolený hlas zariadenia</option>}
+                  {voices.map((v) => (
+                    <option key={v.voiceURI} value={v.voiceURI}>
+                      {v.name} ({v.lang})
+                    </option>
+                  ))}
+                </Select>
+                <Select label="Rýchlosť reči" value={String(prefs.rate)} onChange={(e) => update({ rate: Number(e.target.value) })}>
+                  {[0.9, 1, 1.05, 1.15, 1.25, 1.4].map((r) => (
+                    <option key={r} value={String(r)}>
+                      {r === 1 ? 'Normálna' : `${r}×`}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  size="sm"
+                  icon={<Volume2 className="size-4" />}
+                  onClick={() => {
+                    unlockSpeech();
+                    speaker.say('Dobrý deň, som váš asistent. Zákazka Z 1050 je hotová, zákazník doplatí 49,90 eur.');
+                  }}
+                >
+                  Vyskúšať hlas
+                </Button>
+                {voices.length > 0 && !voices.some((v) => v.lang.toLowerCase().startsWith('sk')) && (
+                  <span className="text-xs text-muted">Zariadenie nemá slovenský hlas – doinštalujte ho v nastaveniach systému (Jazyk a reč).</span>
+                )}
+              </div>
+              <p className="text-xs text-muted">
+                Tip: najprirodzenejšie hlasy majú Microsoft Edge („Natural“), Android (Google) a iPhone (Nastavenia → Prístupnosť → Hovorený obsah → Hlasy → Slovenčina, stiahnuť vylepšený hlas).
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-muted">Tento prehliadač nevie čítať text nahlas.</p>
+          )}
+        </div>
+      </div>
+    </Card>
   );
 }
 

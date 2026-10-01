@@ -12,7 +12,7 @@ import {
 import { sk } from 'date-fns/locale';
 import { BarChart3, Clock, Package, Table2, TrendingUp, Wrench } from 'lucide-react';
 import { useData } from '@/features/data';
-import { inRange, repairAmount } from '@/features/metrics';
+import { receivedAt, inRange, repairAmount } from '@/features/metrics';
 import { Button, Card, EmptyState, Input, PageHeader, Segmented, StatCard, cx } from '@/components/ui';
 import { col } from '@/lib/db';
 import { PAYMENT_METHODS } from '@/lib/constants';
@@ -66,7 +66,7 @@ export default function StatsPage() {
     const orderCost = os.reduce((a, o) => a + (o.totalCost || 0), 0);
     const revenue = repairRevenue + orderRevenue;
     const profit = revenue - repairCost - orderCost;
-    const durations = rs.map((r) => differenceInCalendarDays(toDate(r.closedAt)!, toDate(r.createdAt)!)).filter((d) => d >= 0);
+    const durations = rs.map((r) => differenceInCalendarDays(toDate(r.closedAt)!, toDate(receivedAt(r))!)).filter((d) => d >= 0);
 
     const byItem = new Map<string, { count: number; revenue: number }>();
     for (const r of rs) {

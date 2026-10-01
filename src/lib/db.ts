@@ -157,7 +157,7 @@ export function repairKeywords(r: Pick<Repair, 'number' | 'customer' | 'device'>
 
 export type RepairInput = Omit<
   Repair,
-  'id' | 'number' | 'seq' | 'keywords' | 'total' | 'totalCost' | 'createdAt' | 'updatedAt' | 'history' | 'closedAt'
+  'id' | 'number' | 'seq' | 'keywords' | 'total' | 'totalCost' | 'createdAt' | 'updatedAt' | 'history' | 'closedAt' | 'receivedAt'
 >;
 
 /** Vopred vygenerované ID (napr. aby sa fotky mohli nahrať ešte pred uložením zákazky). */
@@ -198,6 +198,8 @@ export async function updateRepair(prev: Repair, patch: Partial<RepairInput>, no
     notes.push(`Stav: ${repairStatus(prev.status).label} → ${repairStatus(patch.status).label}`);
     const closed = patch.status === 'vydane' || patch.status === 'zrusene';
     update.closedAt = closed ? serverTimestamp() : null;
+    // Zákazník priniesol ohlásené zariadenie – od tejto chvíle je v servise.
+    if (prev.status === 'oznamene' && patch.status !== 'zrusene' && !prev.receivedAt) update.receivedAt = serverTimestamp();
   }
   if (patch.paid === true && !prev.paid) {
     notes.push('Zaplatené');
@@ -296,6 +298,11 @@ export async function saveEvent(input: EventInput, id?: string) {
   }
   const ref = await addDoc(col.events(), { ...payload, createdAt: serverTimestamp() });
   return ref.id;
+}
+
+/** Presun / zmena dĺžky udalosti (ťahaním v kalendári). */
+export async function moveEvent(id: string, start: Date, end: Date) {
+  await updateDoc(doc(db, 'events', id), { start: Timestamp.fromDate(start), end: Timestamp.fromDate(end), updatedAt: serverTimestamp() });
 }
 
 export async function toggleEventDone(e: CalendarEvent) {

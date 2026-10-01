@@ -1,14 +1,14 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { doc } from 'firebase/firestore';
-import { addDays } from 'date-fns';
 import qrcode from 'qrcode-generator';
 import { Printer, X } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import { useLiveDoc } from '@/lib/hooks';
 import { useData } from '@/features/data';
-import { repairAmount } from '@/features/metrics';
-import { DEVICE_TYPES, paymentLabel } from '@/lib/constants';
+import { receivedAt, repairAmount } from '@/features/metrics';
+import { DEVICE_TYPES, paymentLabel, warrantyLabel, warrantyUntil } from '@/lib/constants';
+import { repairQrUrl } from '@/lib/links';
 import { fmtDate, fmtDateTime, fmtMoney, fmtPhone, toDate } from '@/lib/format';
 import type { BusinessSettings, Repair } from '@/lib/types';
 import { PageLoader } from '@/components/ui';
@@ -70,8 +70,6 @@ function Qr({ text, size = 88 }: { text: string; size?: number }) {
   return <div style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
-const repairUrl = (r: Repair) => `${window.location.origin}/zakazky/${r.id}`;
-
 function Header({ s, title, number, date }: { s: BusinessSettings; title: string; number: string; date: string }) {
   return (
     <div className="flex items-start justify-between gap-6 border-b-2 border-black pb-3">
@@ -121,7 +119,7 @@ function deviceLine(r: Repair) {
 function Intake({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
   return (
     <div>
-      <Header s={s} title="Preberací protokol" number={r.number} date={`Prijaté ${fmtDateTime(r.createdAt)}`} />
+      <Header s={s} title="Preberací protokol" number={r.number} date={`Prijaté ${fmtDateTime(receivedAt(r))}`} />
       <div className="grid grid-cols-[1fr_1fr_auto] gap-6">
         <Block title="Zákazník">
           <p className="font-bold">{r.customer.name}</p>
@@ -134,8 +132,9 @@ function Intake({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
           <KV k="Farba" v={r.device.color} />
           <KV k="Príslušenstvo" v={r.device.accessories || 'bez príslušenstva'} />
         </Block>
-        <div className="mt-4">
-          <Qr text={repairUrl(r)} size={80} />
+        <div className="mt-4 flex flex-col items-center gap-1">
+          <Qr text={repairQrUrl(r.id)} size={80} />
+          <p className="w-24 text-center text-[8.5px] leading-tight text-stone-500">Stav opravy online – naskenujte mobilom</p>
         </div>
       </div>
       <Block title="Popis poruchy">
@@ -174,7 +173,7 @@ function Intake({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
               <li key={i}>{l.replace(/^\d+[.)]\s*/, '')}</li>
             ))}
         </ol>
-        <p className="mt-1 text-[10.5px] text-stone-700">Záručná doba na opravu: {r.warrantyDays} dní.</p>
+        <p className="mt-1 text-[10.5px] text-stone-700">Záručná doba na opravu a vymenené diely: {warrantyLabel(r, s.defaultWarrantyMonths)}.</p>
       </Block>
       <Signatures left="Prevzal za servis" right="Odovzdal zákazník (súhlasí s podmienkami)" />
       <p className="mt-6 text-center text-[9px] text-stone-500">Tento dokument nie je daňovým dokladom. Pri vyzdvihnutí predložte protokol alebo uveďte číslo zákazky {r.number}.</p>
@@ -184,7 +183,7 @@ function Intake({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
 
 function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
   const closed = toDate(r.closedAt) ?? new Date();
-  const until = addDays(closed, r.warrantyDays || 0);
+  const until = warrantyUntil(r, closed, s.defaultWarrantyMonths);
   const amount = repairAmount(r);
   return (
     <div>
@@ -197,7 +196,7 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
         <Block title="Zariadenie">
           <p className="font-bold">{deviceLine(r)}</p>
           <KV k="IMEI / SN" v={r.device.imei} />
-          <KV k="Prijaté" v={fmtDate(r.createdAt)} />
+          <KV k="Prijaté" v={fmtDate(receivedAt(r))} />
         </Block>
       </div>
       {r.diagnosis && (
@@ -248,7 +247,7 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
       </div>
       <div className="mt-5 rounded-lg border-2 border-black p-3 text-[12px]">
         <p className="font-bold">
-          Záruka {r.warrantyDays} dní – platí do {fmtDate(until)}
+          Záruka {warrantyLabel(r, s.defaultWarrantyMonths)} – platí do {fmtDate(until)}
         </p>
         <p className="mt-1 text-[10.5px] text-stone-700">
           Záruka sa vzťahuje na vykonanú opravu a vymenené diely. Nevzťahuje sa na mechanické poškodenie, poškodenie tekutinou, neodborný zásah ani bežné opotrebenie. Pri reklamácii
@@ -256,7 +255,6 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
         </p>
       </div>
       <Signatures left="Vydal za servis" right="Zariadenie prevzal zákazník" />
-      <p className="mt-6 text-center text-[9px] text-stone-500">Tento dokument nie je daňovým dokladom. Pokladničný doklad alebo faktúra sa vydáva samostatne.</p>
     </div>
   );
 }
@@ -273,7 +271,7 @@ function Signatures({ left, right }: { left: string; right: string }) {
 function Label({ repair: r }: { repair: Repair }) {
   return (
     <div className="mx-auto my-6 flex h-[29mm] w-[62mm] items-center gap-[2mm] overflow-hidden bg-white p-[1.5mm] shadow print:m-0 print:shadow-none">
-      <Qr text={repairUrl(r)} size={92} />
+      <Qr text={repairQrUrl(r.id)} size={92} />
       <div className="min-w-0 flex-1 leading-tight">
         <p className="text-[15px] font-black tabular">{r.number}</p>
         <p className="truncate text-[9px] font-bold">{r.customer.name}</p>

@@ -19,6 +19,10 @@ import {
   round2,
   Timestamp,
   totals,
+  warrantyEndYmd,
+  warrantyOf,
+  warrantyText,
+  DEFAULT_WARRANTY_MONTHS,
   type LineItem,
 } from '../lib/store.js';
 import { matches, searchToken } from '../lib/keywords.js';
@@ -28,12 +32,21 @@ import { buildKeywords } from '../lib/keywords.js';
 export interface ToolContext {
   actor: string;
   settings: DocumentData;
+  /** Adresa aplikácie (napr. https://chrisstop-app.web.app) – na odkazy pre zákazníkov. */
+  appUrl?: string;
+}
+
+export interface ToolAction {
+  label: string;
+  link?: string;
+  /** Pripravená správa pre zákazníka – v aplikácii sa zobrazia tlačidlá Zavolať / SMS / WhatsApp. */
+  contact?: { phone: string; text: string };
 }
 
 export interface ToolOutcome {
   result: unknown;
   /** Odkaz, ktorý sa zobrazí v aplikácii (napr. „Zákazka Z-1042 vytvorená“). */
-  action?: { label: string; link?: string };
+  action?: ToolAction;
 }
 
 interface ToolDef<S extends z.ZodType> {
@@ -94,6 +107,8 @@ function toItem(i: z.infer<typeof itemIn>, defaultKind: LineItem['kind']): LineI
 
 const ts = (t: unknown) => (t instanceof Timestamp ? t.toDate() : null);
 const repairSum = (r: DocumentData) => (r.items?.length ? r.total : r.estimate ?? 0);
+const defaultMonths = (ctx: ToolContext) => Number(ctx.settings.defaultWarrantyMonths) || DEFAULT_WARRANTY_MONTHS;
+const statusLink = (ctx: ToolContext, id: string) => (ctx.appUrl ? `${ctx.appUrl}/stav/${id}` : undefined);
 
 function repairBrief(snap: DocumentSnapshot) {
   const r = snap.data()!;
@@ -108,16 +123,20 @@ function repairBrief(snap: DocumentSnapshot) {
     zakaznik: r.customer?.name,
     telefon: r.customer?.phone || undefined,
     termin: due ? localYmd(due) : null,
-    po_termine: !!due && OPEN_REPAIR.includes(r.status) && r.status !== 'hotove' && localYmd(due) < localYmd(new Date()),
+    po_termine: !!due && OPEN_REPAIR.includes(r.status) && r.status !== 'hotove' && r.status !== 'oznamene' && localYmd(due) < localYmd(new Date()),
     suma: round2(repairSum(r)),
     zaplatene: !!r.paid,
     priorita: r.priority,
-    prijate: fmtLocal(ts(r.createdAt)),
+    zapisane: fmtLocal(ts(r.createdAt)),
+    prijate: r.status === 'oznamene' ? null : fmtLocal(ts(r.receivedAt) ?? ts(r.createdAt)),
   };
 }
 
-function repairFull(snap: DocumentSnapshot) {
+function repairFull(snap: DocumentSnapshot, ctx: ToolContext) {
   const r = snap.data()!;
+  const w = warrantyOf(r, defaultMonths(ctx));
+  const closed = ts(r.closedAt);
+  const warrantyTo = r.status === 'vydane' && closed ? warrantyEndYmd(w, closed) : null;
   return {
     ...repairBrief(snap),
     zakaznik: { id: r.customerId, meno: r.customer?.name, telefon: r.customer?.phone, email: r.customer?.email },
@@ -137,7 +156,10 @@ function repairFull(snap: DocumentSnapshot) {
     naklady: r.totalCost,
     zaloha: r.deposit,
     sposob_platby: r.paymentMethod,
-    zaruka_dni: r.warrantyDays,
+    zaruka: warrantyText(w),
+    zaruka_do: warrantyTo,
+    v_zaruke: warrantyTo ? warrantyTo >= localYmd(new Date()) : undefined,
+    odkaz_pre_zakaznika: statusLink(ctx, snap.id),
     poznamka_pre_zakaznika: r.notes,
     interna_poznamka: r.internalNotes,
     pocet_fotiek: r.photos?.length ?? 0,
@@ -238,6 +260,7 @@ export const TOOLS = [
           po_termine: rs.filter((r) => r.po_termine),
           termin_dnes: rs.filter((r) => r.termin === today && r.stav !== 'hotove'),
           hotove_na_vyzdvihnutie: rs.filter((r) => r.stav === 'hotove'),
+          oznamene_cakame_na_zariadenie: rs.filter((r) => r.stav === 'oznamene'),
           caka_na_schvalenie: rs.filter((r) => r.stav === 'caka_schvalenie'),
           diely_na_objednanie: partsToOrder,
           objednavky_treba_objednat: orders.docs.filter((d) => d.data().status === 'nova').map(orderBrief),
@@ -310,14 +333,16 @@ export const TOOLS = [
     run: async ({ zakazka }, ctx) => {
       const snap = await findByNumber('repairs', zakazka, ctx.settings.repairPrefix);
       if (!snap) return notFound('Zákazka');
-      return { result: repairFull(snap), action: { label: `Zákazka ${snap.data()!.number}`, link: `/zakazky/${snap.id}` } };
+      return { result: repairFull(snap, ctx), action: { label: `Zákazka ${snap.data()!.number}`, link: `/zakazky/${snap.id}` } };
     },
   }),
 
   tool({
     name: 'vytvor_zakazku',
-    description: 'Vytvorí novú servisnú zákazku (prijatie zariadenia do opravy). Zákazník sa automaticky priradí alebo vytvorí.',
+    description:
+      'Vytvorí novú servisnú zákazku (prijatie zariadenia do opravy). Zákazník sa automaticky priradí alebo vytvorí. Ak zákazník opravu len ohlásil (telefonicky, správou) a zariadenie prinesie neskôr, nastav oznamene=true.',
     schema: z.object({
+      oznamene: z.boolean().optional().describe('true = zariadenie ešte nie je v servise, zákazník ho prinesie neskôr (stav „Oznámené“).'),
       zakaznik: customerIn,
       zariadenie: z.object({
         typ: z.enum(['mobil', 'tablet', 'notebook', 'hodinky', 'konzola', 'ine']).optional(),
@@ -331,7 +356,8 @@ export const TOOLS = [
       porucha: z.string().describe('Popis poruchy od zákazníka.'),
       predbezna_cena: money.optional(),
       zaloha: money.optional(),
-      termin: ymd.optional().describe('Termín dokončenia. Ak nie je povedaný, nechaj prázdne (nastaví sa o 2 dni).'),
+      termin: ymd.optional().describe('Termín dokončenia (pri oznámenej oprave dohodnutý deň, kedy zariadenie prinesie). Ak nie je povedaný, nechaj prázdne – pri prijatom zariadení sa nastaví o 2 dni.'),
+      zaruka_mesiace: z.number().int().min(0).max(60).optional().describe('Len ak používateľ chce inú než štandardnú záruku.'),
       priorita: z.enum(['nizka', 'normalna', 'vysoka', 'urgentna']).optional(),
       polozky: z.array(itemIn).optional().describe('Práca a diely, ak sú už známe.'),
       poznamka_pre_zakaznika: z.string().optional(),
@@ -342,7 +368,7 @@ export const TOOLS = [
       const customer = await ensureCustomer({ id: i.zakaznik.id, name: i.zakaznik.meno, phone: i.zakaznik.telefon, email: i.zakaznik.email });
       const { seq, number } = await nextNumber('repairs', ctx.settings.repairPrefix);
       const items = (i.polozky ?? []).map((x) => toItem(x, 'praca'));
-      const due = i.termin ? endOfLocalDay(i.termin) : endOfLocalDay(localYmd(new Date(Date.now() + 2 * 86400000)));
+      const due = i.termin ? endOfLocalDay(i.termin) : i.oznamene ? null : endOfLocalDay(localYmd(new Date(Date.now() + 2 * 86400000)));
       const device = {
         type: i.zariadenie.typ ?? 'mobil',
         brand: i.zariadenie.znacka,
@@ -356,7 +382,7 @@ export const TOOLS = [
       const data = {
         number,
         seq,
-        status: 'prijate',
+        status: i.oznamene ? 'oznamene' : 'prijate',
         priority: i.priorita ?? 'normalna',
         customerId: customer.id,
         customer,
@@ -370,8 +396,8 @@ export const TOOLS = [
         paid: false,
         paymentMethod: null,
         paidAt: null,
-        warrantyDays: ctx.settings.defaultWarrantyDays ?? 90,
-        dueAt: Timestamp.fromDate(due),
+        warrantyMonths: i.zaruka_mesiace ?? defaultMonths(ctx),
+        dueAt: due ? Timestamp.fromDate(due) : null,
         notes: i.poznamka_pre_zakaznika ?? '',
         internalNotes: i.interna_poznamka ?? '',
         photos: [],
@@ -384,7 +410,7 @@ export const TOOLS = [
       };
       const ref = await db().collection('repairs').add(data);
       return {
-        result: { ok: true, id: ref.id, cislo: number, zakaznik: customer.name, termin: localYmd(due) },
+        result: { ok: true, id: ref.id, cislo: number, stav: data.status, zakaznik: customer.name, termin: due ? localYmd(due) : null, odkaz_pre_zakaznika: statusLink(ctx, ref.id) },
         action: { label: `Vytvorená zákazka ${number}`, link: `/zakazky/${ref.id}` },
       };
     },
@@ -407,6 +433,7 @@ export const TOOLS = [
       zaloha: money.optional(),
       termin: ymd.optional(),
       priorita: z.enum(['nizka', 'normalna', 'vysoka', 'urgentna']).optional(),
+      zaruka_mesiace: z.number().int().min(0).max(60).optional(),
       poznamka_pre_zakaznika: z.string().optional(),
       interna_poznamka: z.string().optional(),
       zaplatene: z.boolean().optional(),
@@ -436,8 +463,10 @@ export const TOOLS = [
       if (i.stav && i.stav !== r.status) {
         update.status = i.stav;
         update.closedAt = i.stav === 'vydane' || i.stav === 'zrusene' ? FieldValue.serverTimestamp() : null;
+        if (r.status === 'oznamene' && i.stav !== 'zrusene' && !r.receivedAt) update.receivedAt = FieldValue.serverTimestamp();
         notes.push(`Stav: ${REPAIR_LABEL[r.status]} → ${REPAIR_LABEL[i.stav]}`);
       }
+      if (i.zaruka_mesiace !== undefined) update.warrantyMonths = i.zaruka_mesiace;
       if (i.diagnostika !== undefined) update.diagnosis = i.diagnostika;
       if (i.predbezna_cena !== undefined) update.estimate = i.predbezna_cena;
       if (i.zaloha !== undefined) update.deposit = i.zaloha;
@@ -456,7 +485,7 @@ export const TOOLS = [
       update.history = FieldValue.arrayUnion(...notes.map((t) => history(ctx.actor, t)));
       await snap.ref.update(update);
       const fresh = await snap.ref.get();
-      return { result: { ok: true, zakazka: repairFull(fresh) }, action: { label: `Upravená zákazka ${r.number}`, link: `/zakazky/${snap.id}` } };
+      return { result: { ok: true, zakazka: repairFull(fresh, ctx) }, action: { label: `Upravená zákazka ${r.number}`, link: `/zakazky/${snap.id}` } };
     },
   }),
 
@@ -786,7 +815,7 @@ export const TOOLS = [
           .sort((a, b) => b[1] - a[1])
           .slice(0, 8);
       const days = rs
-        .map((r) => ((r.closedAt as Timestamp).toMillis() - (r.createdAt as Timestamp).toMillis()) / 86400000)
+        .map((r) => ((r.closedAt as Timestamp).toMillis() - ((r.receivedAt ?? r.createdAt) as Timestamp).toMillis()) / 86400000)
         .filter((d) => d >= 0);
       return {
         result: {
@@ -804,6 +833,22 @@ export const TOOLS = [
         },
       };
     },
+  }),
+
+  tool({
+    name: 'priprav_spravu',
+    description:
+      'Pripraví správu (SMS / WhatsApp) pre zákazníka. V aplikácii sa zobrazia tlačidlá Zavolať, SMS a WhatsApp s predvyplneným textom – odoslanie potvrdí používateľ vo svojom telefóne. Použi vždy, keď chce používateľ zákazníkovi napísať, dať vedieť alebo poslať odkaz na sledovanie opravy. Text píš zdvorilo, stručne, s podpisom firmy.',
+    schema: z.object({
+      telefon: z.string().min(6).describe('Telefón zákazníka (zo zákazky alebo karty zákazníka).'),
+      text: z.string().min(1).max(1000),
+      komu: z.string().optional().describe('Meno zákazníka – na popis tlačidla.'),
+    }),
+    label: (i) => `Pripravujem správu${i.komu ? ` pre ${i.komu}` : ''}`,
+    run: async (i) => ({
+      result: { ok: true, poznamka: 'Tlačidlá na odoslanie sa zobrazili používateľovi. Text správy už neopakuj celý, stačí krátko potvrdiť.' },
+      action: { label: `Správa${i.komu ? ` pre ${i.komu}` : ''}`, contact: { phone: i.telefon, text: i.text } },
+    }),
   }),
 
   tool({

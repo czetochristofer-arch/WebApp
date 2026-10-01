@@ -6,6 +6,11 @@ import { isOverdue } from '@/components/domain';
 
 export const isRepairOpen = (r: Repair) => r.status !== 'vydane' && r.status !== 'zrusene';
 export const isOrderOpen = (o: Order) => o.status !== 'vydana' && o.status !== 'zrusena';
+/** Termín sa stráži len pri zariadeniach, ktoré sú v servise a ešte nie sú hotové. */
+export const watchesDue = (r: Repair) => isRepairOpen(r) && r.status !== 'hotove' && r.status !== 'oznamene';
+export const isRepairLate = (r: Repair) => watchesDue(r) && isOverdue(r.dueAt, true);
+/** Kedy bolo zariadenie prijaté do servisu. */
+export const receivedAt = (r: Repair) => r.receivedAt ?? r.createdAt;
 
 /** Suma zákazky – ak nemá položky, použije sa predbežná cena. */
 export const repairAmount = (r: Repair) => (r.items?.length ? r.total : r.estimate ?? 0);
@@ -37,7 +42,7 @@ export function revenue(repairs: Repair[], orders: Order[], from: Date, to: Date
 export function attention(repairs: Repair[], orders: Order[]) {
   const open = repairs.filter(isRepairOpen);
   return {
-    overdue: open.filter((r) => r.status !== 'hotove' && isOverdue(r.dueAt, true)),
+    overdue: open.filter(isRepairLate),
     partsToOrder: open.filter((r) => r.items?.some((i) => i.kind === 'diel' && i.partStatus === 'treba_objednat')),
     awaitingApproval: open.filter((r) => r.status === 'caka_schvalenie'),
     ready: open.filter((r) => r.status === 'hotove'),

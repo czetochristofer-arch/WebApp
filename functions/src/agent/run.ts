@@ -1,18 +1,21 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
+import { getStorage } from 'firebase-admin/storage';
 import type { DocumentReference } from 'firebase-admin/firestore';
 import { db, FieldValue, getSettings } from '../lib/store.js';
 import { nowDescription } from '../lib/time.js';
 import { systemPrompt } from './prompt.js';
-import { toolByName, TOOLS, type ToolContext } from './tools.js';
+import { toolByName, TOOLS, type ToolAction, type ToolContext } from './tools.js';
 
+/** Predvolený model; v Nastaveniach sa dá pre nové konverzácie zvoliť úspornejší Haiku. */
 export const MODEL = process.env.AGENT_MODEL || 'claude-sonnet-5-5';
+export const ECONOMY_MODEL = 'claude-haiku-4-5';
 const MAX_ITERATIONS = 14;
 
 export type AgentChunk =
   | { type: 'thread'; threadId: string }
   | { type: 'text'; text: string }
-  | { type: 'tool'; id: string; label: string; status: 'start' | 'done' | 'error'; link?: string; result?: string }
+  | { type: 'tool'; id: string; label: string; status: 'start' | 'done' | 'error'; link?: string; contact?: ToolAction['contact'] }
   | { type: 'error'; message: string };
 
 type Beta = Anthropic.Beta.BetaMessageParam;
@@ -24,27 +27,63 @@ function jsonSchema(schema: z.ZodType) {
   return s as Anthropic.Beta.BetaTool['input_schema'];
 }
 
-const TOOL_DEFS: Anthropic.Beta.BetaToolUnion[] = [
-  ...TOOLS.map(
-    (t): Anthropic.Beta.BetaTool => ({
-      name: t.name,
-      description: t.description,
-      input_schema: jsonSchema(t.schema),
-      eager_input_streaming: true,
-    }),
-  ),
-  {
-    type: 'web_search_20260209',
-    name: 'web_search',
-    max_uses: 5,
-    user_location: { type: 'approximate', timezone: 'Europe/Bratislava' },
-  },
-];
+const CUSTOM_TOOLS: Anthropic.Beta.BetaToolUnion[] = TOOLS.map(
+  (t): Anthropic.Beta.BetaTool => ({
+    name: t.name,
+    description: t.description,
+    input_schema: jsonSchema(t.schema),
+    eager_input_streaming: true,
+  }),
+);
+const userLocation = { type: 'approximate', timezone: 'Europe/Bratislava' } as const;
+
+/** Parametre požiadavky podľa modelu (Haiku 4.5 nepozná adaptívne premýšľanie ani novšie vyhľadávanie). */
+function modelParams(model: string) {
+  if (model.startsWith('claude-haiku')) {
+    return {
+      model,
+      max_tokens: 32000,
+      tools: [...CUSTOM_TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 5, user_location: userLocation }] as Anthropic.Beta.BetaToolUnion[],
+    };
+  }
+  return {
+    model,
+    max_tokens: 64000,
+    tools: [...CUSTOM_TOOLS, { type: 'web_search_20260209', name: 'web_search', max_uses: 5, user_location: userLocation }] as Anthropic.Beta.BetaToolUnion[],
+    // Ak by sa po aktualizácii aplikácie zmenil zoznam nástrojov, staré úvahy modelu sa
+    // v starších konverzáciách jednoducho vynechajú namiesto chyby.
+    thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } } as const,
+    output_config: { effort: 'medium' } as const,
+    betas: ['server-side-fallback-2026-07-01', 'thinking-binding-controls-2026-08-01'],
+    fallbacks: 'default' as const,
+  };
+}
 
 interface StoredMessage {
   seq: number;
   role: 'user' | 'assistant';
   content: string;
+}
+
+/** Fotky sa v histórii ukladajú ako odkaz do úložiska; pred odoslaním modelu sa načítajú (vždy rovnaké bajty). */
+type StorageImage = { type: 'image'; source: { type: 'storage'; path: string; media_type: string } };
+
+async function loadImage(path: string) {
+  const [buf] = await getStorage().bucket().file(path).download();
+  return buf.toString('base64');
+}
+
+async function hydrate(content: unknown): Promise<unknown> {
+  if (!Array.isArray(content)) return content;
+  return Promise.all(
+    content.map(async (block) => {
+      const b = block as StorageImage;
+      if (b?.type === 'image' && b.source?.type === 'storage') {
+        return { type: 'image', source: { type: 'base64', media_type: b.source.media_type, data: await loadImage(b.source.path) } };
+      }
+      return block;
+    }),
+  );
 }
 
 /** Stav konverzácie je len pripájaný (append-only) – nič sa spätne neprepisuje. */
@@ -53,7 +92,7 @@ async function appendMessage(
   seq: number,
   role: 'user' | 'assistant',
   content: unknown,
-  display: { text?: string; hidden?: boolean; actions?: { label: string; link?: string }[] },
+  display: { text?: string; hidden?: boolean; actions?: ToolAction[]; images?: string[]; voice?: boolean },
 ) {
   await thread
     .collection('messages')
@@ -65,6 +104,8 @@ async function appendMessage(
       text: display.text ?? '',
       hidden: !!display.hidden,
       actions: display.actions ?? [],
+      ...(display.images?.length ? { images: display.images } : {}),
+      ...(display.voice ? { voice: true } : {}),
       createdAt: FieldValue.serverTimestamp(),
     });
 }
@@ -75,39 +116,47 @@ export async function runAgent(opts: {
   actor: string;
   threadId?: string;
   message: string;
+  images?: string[];
+  voice?: boolean;
+  appUrl?: string;
   send: (chunk: AgentChunk) => void;
   signal?: AbortSignal;
 }): Promise<{ threadId: string; text: string }> {
   const { send } = opts;
   const client = new Anthropic({ apiKey: opts.apiKey });
   const settings = await getSettings();
-  const ctx: ToolContext = { actor: opts.actor, settings };
+  const ctx: ToolContext = { actor: opts.actor, settings, appUrl: opts.appUrl };
 
   // Konverzácia
   const threads = db().collection('agentThreads');
   let thread: DocumentReference;
   let messages: Beta[] = [];
   let seq = 0;
-  // Systémový prompt sa pre konverzáciu zafixuje pri jej vzniku: história musí ostať nezmenená
-  // (aj keď sa neskôr zmenia údaje firmy), inak by model zahodil svoje predchádzajúce úvahy.
+  // Systémový prompt aj model sa pre konverzáciu zafixujú pri jej vzniku: história musí ostať nezmenená
+  // (aj keď sa neskôr zmenia údaje firmy či nastavenie modelu), inak by model zahodil svoje predchádzajúce úvahy.
   let system = systemPrompt(settings);
+  let model = settings.agentModel === 'haiku' ? ECONOMY_MODEL : MODEL;
   if (opts.threadId) {
     thread = threads.doc(opts.threadId);
     const snap = await thread.get();
     if (!snap.exists || snap.data()!.uid !== opts.uid) throw new Error('Konverzácia neexistuje.');
     if (typeof snap.data()!.system === 'string') system = snap.data()!.system;
+    model = typeof snap.data()!.model === 'string' ? snap.data()!.model : MODEL;
     const stored = await thread.collection('messages').orderBy('seq').get();
-    messages = stored.docs.map((d) => {
-      const m = d.data() as StoredMessage;
-      seq = Math.max(seq, m.seq);
-      return { role: m.role, content: JSON.parse(m.content) } as Beta;
-    });
+    messages = await Promise.all(
+      stored.docs.map(async (d) => {
+        const m = d.data() as StoredMessage;
+        seq = Math.max(seq, m.seq);
+        return { role: m.role, content: await hydrate(JSON.parse(m.content)) } as Beta;
+      }),
+    );
     await thread.update({ updatedAt: FieldValue.serverTimestamp() });
   } else {
     thread = threads.doc();
     await thread.set({
       uid: opts.uid,
       system,
+      model,
       title: opts.message.slice(0, 80),
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -115,32 +164,28 @@ export async function runAgent(opts: {
   }
   send({ type: 'thread', threadId: thread.id });
 
-  const userContent: BetaContent[] = [{ type: 'text', text: `<kontext>Aktuálny dátum a čas: ${nowDescription()}. Používateľ: ${opts.actor}.</kontext>\n\n${opts.message}` }];
-  messages.push({ role: 'user', content: userContent });
-  await appendMessage(thread, ++seq, 'user', userContent, { text: opts.message });
+  const context = [
+    `Aktuálny dátum a čas: ${nowDescription()}.`,
+    `Používateľ: ${opts.actor}.`,
+    opts.voice
+      ? 'Používateľ hovorí hlasom a odpoveď mu aplikácia prečíta nahlas: odpovedz krátko (najviac 2–3 vety), bez tabuliek, odrážok, nadpisov a emoji; čísla zákaziek a sumy píš tak, aby sa dali plynule prečítať.'
+      : '',
+    opts.images?.length ? `Používateľ priložil ${opts.images.length === 1 ? 'fotku' : `${opts.images.length} fotky`}.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const imageBlocks: StorageImage[] = (opts.images ?? []).map((path) => ({ type: 'image', source: { type: 'storage', path, media_type: 'image/jpeg' } }));
+  const storedUserContent = [...imageBlocks, { type: 'text', text: `<kontext>${context}</kontext>\n\n${opts.message}` }];
+  messages.push({ role: 'user', content: (await hydrate(storedUserContent)) as BetaContent[] });
+  await appendMessage(thread, ++seq, 'user', storedUserContent, { text: opts.message, images: opts.images, voice: opts.voice });
 
   let finalText = '';
-  let pendingActions: { label: string; link?: string }[] = [];
+  let pendingActions: ToolAction[] = [];
+  const params = modelParams(model);
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     if (opts.signal?.aborted) break;
-    const stream = client.beta.messages.stream(
-      {
-        model: MODEL,
-        max_tokens: 64000,
-        system,
-        tools: TOOL_DEFS,
-        messages,
-        // Ak by sa po aktualizácii aplikácie zmenil zoznam nástrojov, staré úvahy modelu sa
-        // v starších konverzáciách jednoducho vynechajú namiesto chyby.
-        thinking: { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } },
-        output_config: { effort: 'medium' },
-        cache_control: { type: 'ephemeral' },
-        betas: ['server-side-fallback-2026-07-01', 'thinking-binding-controls-2026-08-01'],
-        fallbacks: 'default',
-      },
-      { signal: opts.signal },
-    );
+    const stream = client.beta.messages.stream({ ...params, system, messages, cache_control: { type: 'ephemeral' } }, { signal: opts.signal });
     // Text z ďalšieho kroku (po použití nástroja) oddelíme od predchádzajúceho novým odsekom.
     let separated = !finalText;
     stream.on('text', (delta) => {
@@ -195,9 +240,9 @@ export async function runAgent(opts: {
         const label = (def.label as (i: unknown) => string)(parsed.data);
         send({ type: 'tool', id: use.id, label, status: 'start' });
         try {
-          const outcome = await (def.run as (i: unknown, c: ToolContext) => Promise<{ result: unknown; action?: { label: string; link?: string } }>)(parsed.data, ctx);
+          const outcome = await (def.run as (i: unknown, c: ToolContext) => Promise<{ result: unknown; action?: ToolAction }>)(parsed.data, ctx);
           if (outcome.action) pendingActions.push(outcome.action);
-          send({ type: 'tool', id: use.id, label: outcome.action?.label ?? label, status: 'done', link: outcome.action?.link });
+          send({ type: 'tool', id: use.id, label: outcome.action?.label ?? label, status: 'done', link: outcome.action?.link, contact: outcome.action?.contact });
           return { type: 'tool_result', tool_use_id: use.id, content: JSON.stringify(outcome.result) };
         } catch (err) {
           console.error('agent tool', use.name, err);

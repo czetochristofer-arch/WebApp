@@ -1,3 +1,4 @@
+import { addDays, addMonths } from 'date-fns';
 import type {
   BusinessSettings,
   DeviceType,
@@ -10,9 +11,10 @@ import type {
   RepairStatus,
 } from './types';
 
-export type Tone = 'gray' | 'blue' | 'violet' | 'amber' | 'orange' | 'cyan' | 'green' | 'red';
+export type Tone = 'gray' | 'blue' | 'violet' | 'amber' | 'orange' | 'cyan' | 'green' | 'red' | 'pink';
 
 export const REPAIR_STATUSES: { id: RepairStatus; label: string; short: string; tone: Tone; open: boolean }[] = [
+  { id: 'oznamene', label: 'Oznámené – čaká na prinesenie', short: 'Oznámené', tone: 'pink', open: true },
   { id: 'prijate', label: 'Prijaté', short: 'Prijaté', tone: 'gray', open: true },
   { id: 'diagnostika', label: 'Diagnostika', short: 'Diagnostika', tone: 'blue', open: true },
   { id: 'caka_schvalenie', label: 'Čaká na schválenie', short: 'Schválenie', tone: 'violet', open: true },
@@ -23,7 +25,45 @@ export const REPAIR_STATUSES: { id: RepairStatus; label: string; short: string; 
   { id: 'zrusene', label: 'Zrušené', short: 'Zrušené', tone: 'red', open: false },
 ];
 export const OPEN_REPAIR_STATUSES = REPAIR_STATUSES.filter((s) => s.open).map((s) => s.id);
-export const repairStatus = (id: RepairStatus) => REPAIR_STATUSES.find((s) => s.id === id) ?? REPAIR_STATUSES[0];
+export const repairStatus = (id: RepairStatus) => REPAIR_STATUSES.find((s) => s.id === id) ?? REPAIR_STATUSES[1];
+
+/** Ako stav zákazky vysvetliť zákazníkovi (verejná stránka stavu). */
+export const REPAIR_STATUS_PUBLIC: Record<RepairStatus, { title: string; text: string }> = {
+  oznamene: { title: 'Zákazka je zaevidovaná', text: 'Čakáme, kým zariadenie prinesiete do servisu.' },
+  prijate: { title: 'Zariadenie sme prijali', text: 'Zariadenie je v servise a čaká na diagnostiku.' },
+  diagnostika: { title: 'Prebieha diagnostika', text: 'Zisťujeme príčinu poruchy.' },
+  caka_schvalenie: { title: 'Čakáme na vaše schválenie', text: 'Diagnostika je hotová. Ozvite sa nám, prosím, či súhlasíte s cenou opravy.' },
+  caka_diely: { title: 'Čakáme na náhradné diely', text: 'Diely sú objednané. Hneď po doručení pokračujeme v oprave.' },
+  v_oprave: { title: 'Zariadenie je v oprave', text: 'Na oprave práve pracujeme.' },
+  hotove: { title: 'Hotovo – môžete si prísť', text: 'Zariadenie je opravené a pripravené na vyzdvihnutie.' },
+  vydane: { title: 'Zariadenie bolo vydané', text: 'Ďakujeme, že ste využili naše služby.' },
+  zrusene: { title: 'Zákazka bola zrušená', text: 'Ak máte otázky, kontaktujte nás.' },
+};
+
+export const DEFAULT_WARRANTY_MONTHS = 12;
+/** Pôvodná predvolená záruka v dňoch – takto označené staršie zákazky preberajú novú predvolenú záruku. */
+const LEGACY_DEFAULT_WARRANTY_DAYS = 90;
+
+const plural = (n: number, one: string, few: string, many: string) => (n === 1 ? one : n >= 2 && n <= 4 ? few : many);
+
+/** Záruka zákazky: nové zákazky majú mesiace, staršie dni (pôvodných 90 dní = predvolená záruka). */
+export function warrantyOf(r: { warrantyMonths?: number | null; warrantyDays?: number | null }, defaultMonths = DEFAULT_WARRANTY_MONTHS) {
+  if (r.warrantyMonths != null) return { months: r.warrantyMonths };
+  if (r.warrantyDays != null && r.warrantyDays !== LEGACY_DEFAULT_WARRANTY_DAYS) return { days: r.warrantyDays };
+  return { months: defaultMonths };
+}
+
+export function warrantyLabel(r: Parameters<typeof warrantyOf>[0], defaultMonths?: number) {
+  const w = warrantyOf(r, defaultMonths);
+  if ('days' in w && w.days !== undefined) return `${w.days} ${plural(w.days, 'deň', 'dni', 'dní')}`;
+  const m = w.months ?? 0;
+  return `${m} ${plural(m, 'mesiac', 'mesiace', 'mesiacov')}`;
+}
+
+export function warrantyUntil(r: Parameters<typeof warrantyOf>[0], from: Date, defaultMonths?: number) {
+  const w = warrantyOf(r, defaultMonths);
+  return 'days' in w && w.days !== undefined ? addDays(from, w.days) : addMonths(from, w.months ?? 0);
+}
 
 export const ORDER_STATUSES: { id: OrderStatus; label: string; tone: Tone; open: boolean }[] = [
   { id: 'nova', label: 'Treba objednať', tone: 'amber', open: true },
@@ -96,7 +136,7 @@ export const DEFAULT_TERMS = [
   'Zákazník svojím podpisom potvrdzuje odovzdanie zariadenia v uvedenom stave a súhlasí s podmienkami servisu.',
   'Predbežná cena je orientačná. Ak by mala byť oprava drahšia, servis zákazníka pred pokračovaním kontaktuje.',
   'Servis nezodpovedá za dáta v zariadení. Odporúčame pred opravou zálohovať.',
-  'Na vykonanú opravu a vymenené diely poskytujeme záruku v uvedenej dĺžke. Záruka sa nevzťahuje na mechanické poškodenie, poškodenie vodou a neodborný zásah.',
+  'Na vykonanú opravu a vymenené diely poskytujeme záruku 12 mesiacov. Záruka sa nevzťahuje na mechanické poškodenie, poškodenie vodou a neodborný zásah.',
   'Zariadenie nevyzdvihnuté do 90 dní od oznámenia o ukončení opravy môže servis po predchádzajúcej výzve zlikvidovať alebo použiť na krytie nákladov.',
   'Osobné údaje spracúvame len na účel vybavenia opravy a v súlade s GDPR.',
 ].join('\n');
@@ -116,10 +156,11 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   logoUrl: '',
   repairPrefix: 'Z',
   orderPrefix: 'O',
-  defaultWarrantyDays: 90,
+  defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
   protocolTerms: DEFAULT_TERMS,
   smsReadyTemplate: 'Dobrý deň, Vaše zariadenie {zariadenie} (zákazka {cislo}) je pripravené na vyzdvihnutie. Cena: {cena}. {firma}',
   smsOrderTemplate: 'Dobrý deň, Vaša objednávka {cislo} ({polozky}) dorazila a je pripravená na vyzdvihnutie. {firma}',
   workdayStart: 8,
   workdayEnd: 18,
+  agentModel: 'sonnet',
 };

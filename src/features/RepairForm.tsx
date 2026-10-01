@@ -11,7 +11,7 @@ import type { ReactNode } from 'react';
 
 export type RepairDraft = RepairInput;
 
-export function emptyRepair(warrantyDays: number): RepairDraft {
+export function emptyRepair(warrantyMonths: number): RepairDraft {
   return {
     status: 'prijate',
     priority: 'normalna',
@@ -26,7 +26,7 @@ export function emptyRepair(warrantyDays: number): RepairDraft {
     paid: false,
     paymentMethod: null,
     paidAt: null,
-    warrantyDays,
+    warrantyMonths,
     dueAt: Timestamp.fromDate(endOfDay(addDays(new Date(), 2))),
     notes: '',
     internalNotes: '',
@@ -119,7 +119,13 @@ export function RepairFormSections({ draft, set, compact }: { draft: RepairDraft
             hint={draft.items.length ? 'Konečná suma sa počíta z položiek' : 'Ak ešte nie sú položky'}
           />
           <Input label="Záloha" inputMode="decimal" suffix="€" value={draft.deposit || ''} onChange={(e) => set('deposit', parseNum(e.target.value))} />
-          <Input label="Záruka (dni)" inputMode="numeric" value={draft.warrantyDays} onChange={(e) => set('warrantyDays', Math.round(parseNum(e.target.value)))} />
+          <Input
+            label="Záruka"
+            inputMode="numeric"
+            suffix="mes."
+            value={draft.warrantyMonths ?? ''}
+            onChange={(e) => set('warrantyMonths', e.target.value === '' ? null : Math.round(parseNum(e.target.value)))}
+          />
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
