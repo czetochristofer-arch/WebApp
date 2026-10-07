@@ -15,6 +15,7 @@ import {
   PackageOpen,
   PartyPopper,
   PhoneCall,
+  Smartphone,
   ShieldAlert,
   ShoppingCart,
   Sparkles,
@@ -35,11 +36,12 @@ import { REPAIR_STATUSES, eventType, type Tone } from '@/lib/constants';
 import { fmtMoney, fmtTime, toDate } from '@/lib/format';
 import { useNow } from '@/lib/hooks';
 import { statusUrl } from '@/lib/links';
+import { phoneName } from '@/lib/phones';
 import type { CalendarEvent, Order, Repair, RepairStatus } from '@/lib/types';
 
 export function DashboardPage() {
   const { user, member } = useAuth();
-  const { repairs, orders, events, settings } = useData();
+  const { repairs, orders, events, settings, phones } = useData();
   const shell = useShell();
   const navigate = useNavigate();
   const now = useNow();
@@ -49,7 +51,8 @@ export function DashboardPage() {
   const att = useMemo(() => attention(repairs, orders), [repairs, orders]);
   const announced = useMemo(() => open.filter((r) => r.status === 'oznamene'), [open]);
   const claims = useMemo(() => open.filter((r) => isClaim(r) && r.status !== 'hotove').sort((a, b) => claimDeadline(a).getTime() - claimDeadline(b).getTime()), [open]);
-  const month = useMemo(() => revenue(repairs, orders, startOfMonth(now), endOfMonth(now)), [repairs, orders, now]);
+  const month = useMemo(() => revenue(repairs, orders, startOfMonth(now), endOfMonth(now), phones), [repairs, orders, phones, now]);
+  const phonesToFix = useMemo(() => phones.filter((p) => p.status === 'na_repas'), [phones]);
   const firstName = (member?.name || user?.displayName || '').split(' ')[0];
 
   const today = useMemo(() => {
@@ -152,6 +155,24 @@ export function DashboardPage() {
       hint: 'Dať vedieť zákazníkovi',
       items: att.ordersArrived.map((o) => <OrderMini key={o.id} o={o} extra={<ContactButtons phone={o.customer.phone} message={orderMsg(o)} iconsOnly />} />),
       to: '/objednavky',
+    },
+    {
+      key: 'phones',
+      tone: 'amber' as Tone,
+      icon: <Smartphone className="size-4" />,
+      title: 'Telefóny na repas',
+      hint: 'Z výkupu – pred predajom',
+      items: phonesToFix.map((p) => (
+        <div key={p.id} className="flex items-center gap-3 px-4 py-2.5">
+          <Link to={`/telefony/${p.id}`} className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">
+              <span className="text-primary tabular">{p.number}</span> · {phoneName(p)}
+            </span>
+            <span className="block truncate text-xs text-muted">{(p.tasks ?? []).filter((t) => !t.done).map((t) => t.name).join(', ') || 'Skontrolovať a pripraviť'}</span>
+          </Link>
+        </div>
+      )),
+      to: '/telefony',
     },
     {
       key: 'announced',

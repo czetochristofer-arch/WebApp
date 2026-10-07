@@ -24,6 +24,10 @@ const PrintPage = lazy(() => import('@/pages/Print'));
 const PublicStatusPage = lazy(() => import('@/pages/PublicStatus'));
 const ClaimsPage = lazy(() => import('@/pages/Claims'));
 const ClaimNewPage = lazy(() => import('@/pages/ClaimNew'));
+const PhonesPage = lazy(() => import('@/pages/Phones'));
+const PhoneBuyPage = lazy(() => import('@/pages/PhoneBuy'));
+const PhoneDetailPage = lazy(() => import('@/pages/PhoneDetail'));
+const PhonePrintPage = lazy(() => import('@/pages/PhonePrint'));
 
 function PublicStatus({ id }: { id: string }) {
   return (
@@ -73,6 +77,7 @@ function AppRoutes() {
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/tlac/:kind/:id" element={<PrintPage />} />
+          <Route path="/tlac/telefon/:kind/:id" element={<PhonePrintPage />} />
           <Route element={<Layout />}>
             <Route index element={<DashboardPage />} />
             <Route path="zakazky" element={<RepairsPage />} />
@@ -80,6 +85,9 @@ function AppRoutes() {
             <Route path="zakazky/:id" element={<RepairDetailPage />} />
             <Route path="reklamacie" element={<ClaimsPage />} />
             <Route path="reklamacie/nova" element={<ClaimNewPage />} />
+            <Route path="telefony" element={<PhonesPage />} />
+            <Route path="telefony/vykup" element={<PhoneBuyPage />} />
+            <Route path="telefony/:id" element={<PhoneDetailPage />} />
             <Route path="objednavky" element={<OrdersPage />} />
             <Route path="objednavky/:id" element={<OrdersPage />} />
             <Route path="kalendar" element={<CalendarPage />} />

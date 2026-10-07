@@ -41,6 +41,7 @@ export const col = {
   customers: () => collection(db, 'customers'),
   events: () => collection(db, 'events'),
   priceList: () => collection(db, 'priceList'),
+  phones: () => collection(db, 'phones'),
   members: () => collection(db, 'members'),
   invites: () => collection(db, 'invites'),
 };
@@ -50,12 +51,12 @@ export function actorName() {
   return u?.displayName || u?.email || 'Používateľ';
 }
 
-function history(text: string) {
+export function history(text: string) {
   return { at: Timestamp.now(), by: actorName(), text };
 }
 
 /** Odstráni polia s hodnotou undefined z bežných objektov (Timestamp a pod. nechá tak). */
-function clean<T>(value: T): T {
+export function clean<T>(value: T): T {
   if (Array.isArray(value)) return value.map(clean) as T;
   if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
     const out: Record<string, unknown> = {};
@@ -80,9 +81,9 @@ export function totals(items: LineItem[]) {
 }
 
 /** Pridelí ďalšie poradové číslo (transakcia – bez duplicít ani pri súbežnom zápise). */
-export type CounterKind = 'repairs' | 'orders' | 'claims';
+export type CounterKind = 'repairs' | 'orders' | 'claims' | 'phones';
 
-async function nextNumber(kind: CounterKind, prefix: string) {
+export async function nextNumber(kind: CounterKind, prefix: string) {
   const counterRef = doc(db, 'counters', kind);
   const seq = await runTransaction(db, async (tx) => {
     const snap = await tx.get(counterRef);

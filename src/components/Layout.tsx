@@ -13,6 +13,7 @@ import {
   Plus,
   Search,
   ShieldAlert,
+  Smartphone,
   Sparkles,
   Sun,
   UserPlus,
@@ -42,7 +43,7 @@ export const useShell = () => {
 
 export function Layout() {
   const { user, member, signOut } = useAuth();
-  const { repairs, orders } = useData();
+  const { repairs, orders, phones } = useData();
   const isDesktop = useIsDesktop();
   const online = useOnline();
   const navigate = useNavigate();
@@ -57,7 +58,8 @@ export function Layout() {
   const openClaims = openAll.filter((r) => r.kind === 'reklamacia').length;
   const openRepairs = openAll.length - openClaims;
   const openOrders = orders.filter((o) => o.status !== 'vydana' && o.status !== 'zrusena').length;
-  const counts: Record<string, number> = { '/zakazky': openRepairs, '/reklamacie': openClaims, '/objednavky': openOrders };
+  const phonesInStock = phones.filter((p) => p.status !== 'predane' && p.status !== 'vyradene').length;
+  const counts: Record<string, number> = { '/zakazky': openRepairs, '/reklamacie': openClaims, '/objednavky': openOrders, '/telefony': phonesInStock };
 
   const api: ShellApi = {
     openSearch: () => setSearchOpen(true),
@@ -284,6 +286,7 @@ function QuickCreate({ open, onClose }: { open: boolean; onClose: () => void }) 
   const items = [
     { icon: <Wrench className="size-5" />, label: 'Nová zákazka', hint: 'Prijatie zariadenia do servisu', to: '/zakazky/nova' },
     { icon: <ShieldAlert className="size-5" />, label: 'Reklamácia', hint: 'Oprava alebo tovar kúpený u nás', to: '/reklamacie/nova' },
+    { icon: <Smartphone className="size-5" />, label: 'Výkup telefónu', hint: 'Výkupný doklad a zaradenie na sklad', to: '/telefony/vykup' },
     { icon: <PackagePlus className="size-5" />, label: 'Nová objednávka', hint: 'Puzdro, sklo, nabíjačka…', to: '/objednavky?nova=1' },
     { icon: <CalendarPlus className="size-5" />, label: 'Udalosť v kalendári', hint: 'Termín, práca, stretnutie', to: '/kalendar?nova=termin' },
     { icon: <ListTodo className="size-5" />, label: 'Úloha', hint: 'Čo treba urobiť', to: '/kalendar?nova=uloha' },

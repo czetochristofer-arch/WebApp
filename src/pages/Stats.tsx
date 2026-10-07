@@ -18,12 +18,13 @@ import { col } from '@/lib/db';
 import { PAYMENT_METHODS } from '@/lib/constants';
 import { fmtMoney, round2, toDate } from '@/lib/format';
 import { useLiveQuery } from '@/lib/hooks';
-import type { Order, Repair } from '@/lib/types';
+import type { Order, Phone, Repair } from '@/lib/types';
+import { totalCost } from '@/lib/phones';
 
 type Period = 'mesiac' | 'minuly' | 'rok' | '12m' | 'vlastne';
 
 export default function StatsPage() {
-  const { repairs: loadedRepairs, orders: loadedOrders } = useData();
+  const { repairs: loadedRepairs, orders: loadedOrders, phones: loadedPhones } = useData();
   const [period, setPeriod] = useState<Period>('mesiac');
   const [custom, setCustom] = useState({ from: format(startOfMonth(new Date()), 'yyyy-MM-dd'), to: format(new Date(), 'yyyy-MM-dd') });
 
@@ -48,6 +49,7 @@ export default function StatsPage() {
   const since = from < chartFrom ? from : chartFrom;
   const sinceKey = format(since, 'yyyy-MM-dd');
   const closedRepairs = useLiveQuery<Repair>(() => query(col.repairs(), where('closedAt', '>=', Timestamp.fromDate(since))), `stats-r-${sinceKey}`);
+  const closedPhones = useLiveQuery<Phone>(() => query(col.phones(), where('closedAt', '>=', Timestamp.fromDate(since))), `stats-p-${sinceKey}`);
   const closedOrders = useLiveQuery<Order>(() => query(col.orders(), where('closedAt', '>=', Timestamp.fromDate(since))), `stats-o-${sinceKey}`);
   const createdRepairs = useLiveQuery<Repair>(
     () => query(col.repairs(), where('createdAt', '>=', Timestamp.fromDate(from)), where('createdAt', '<=', Timestamp.fromDate(to))),
@@ -56,6 +58,8 @@ export default function StatsPage() {
 
   const repairs = closedRepairs.data.length ? closedRepairs.data : loadedRepairs;
   const orders = closedOrders.data.length ? closedOrders.data : loadedOrders;
+  const phones = closedPhones.data.length ? closedPhones.data : loadedPhones;
+  const soldIn = (a: Date, b: Date) => phones.filter((p) => p.status === 'predane' && p.sale && inRange(p.closedAt, a, b));
 
   const s = useMemo(() => {
     const closedAll = repairs.filter((r) => r.status === 'vydane' && inRange(r.closedAt, from, to));
@@ -67,8 +71,11 @@ export default function StatsPage() {
     const repairCost = closedAll.reduce((a, r) => a + (r.totalCost || 0), 0);
     const orderRevenue = os.reduce((a, o) => a + (o.total || 0), 0);
     const orderCost = os.reduce((a, o) => a + (o.totalCost || 0), 0);
-    const revenue = repairRevenue + orderRevenue;
-    const profit = revenue - repairCost - orderCost;
+    const ps = soldIn(from, to);
+    const phoneRevenue = ps.reduce((a, p) => a + (p.sale?.price ?? 0), 0);
+    const phoneCost = ps.reduce((a, p) => a + totalCost(p), 0);
+    const revenue = repairRevenue + orderRevenue + phoneRevenue;
+    const profit = revenue - repairCost - orderCost - phoneCost;
     const durations = rs.map((r) => differenceInCalendarDays(toDate(r.closedAt)!, toDate(receivedAt(r))!)).filter((d) => d >= 0);
 
     const byItem = new Map<string, { count: number; revenue: number }>();
@@ -99,6 +106,9 @@ export default function StatsPage() {
       profit,
       repairRevenue,
       orderRevenue,
+      phoneRevenue,
+      phoneProfit: phoneRevenue - phoneCost,
+      phonesSold: ps.length,
       margin: revenue ? (profit / revenue) * 100 : 0,
       avgRepair: rs.length ? rs.reduce((a, r) => a + repairAmount(r), 0) / rs.length : 0,
       claims,
@@ -107,7 +117,7 @@ export default function StatsPage() {
       topBrands: [...byBrand.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
       payments: [...byPayment.entries()].sort((a, b) => b[1] - a[1]),
     };
-  }, [repairs, orders, from, to]);
+  }, [repairs, orders, phones, from, to]);
 
   const months = useMemo(() => {
     return Array.from({ length: 12 }, (_, i) => {
@@ -115,11 +125,13 @@ export default function StatsPage() {
       const mEnd = endOfMonth(m);
       const rs = repairs.filter((r) => r.status === 'vydane' && inRange(r.closedAt, m, mEnd));
       const os = orders.filter((o) => o.status === 'vydana' && inRange(o.closedAt, m, mEnd));
-      const revenue = rs.reduce((a, r) => a + repairAmount(r), 0) + os.reduce((a, o) => a + o.total, 0);
-      const cost = rs.reduce((a, r) => a + (r.totalCost || 0), 0) + os.reduce((a, o) => a + (o.totalCost || 0), 0);
-      return { label: format(m, 'LLL', { locale: sk }), full: format(m, 'LLLL yyyy', { locale: sk }), revenue: round2(revenue), cost: round2(cost), profit: round2(revenue - cost), count: rs.length + os.length };
+      const ps = soldIn(m, mEnd);
+      const revenue = rs.reduce((a, r) => a + repairAmount(r), 0) + os.reduce((a, o) => a + o.total, 0) + ps.reduce((a, p) => a + (p.sale?.price ?? 0), 0);
+      const cost = rs.reduce((a, r) => a + (r.totalCost || 0), 0) + os.reduce((a, o) => a + (o.totalCost || 0), 0) + ps.reduce((a, p) => a + totalCost(p), 0);
+      return { label: format(m, 'LLL', { locale: sk }), full: format(m, 'LLLL yyyy', { locale: sk }), revenue: round2(revenue), cost: round2(cost), profit: round2(revenue - cost), count: rs.length + os.length + ps.length };
     });
-  }, [repairs, orders]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repairs, orders, phones]);
 
   return (
     <div>
@@ -145,10 +157,10 @@ export default function StatsPage() {
       </div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Tržby" value={fmtMoney(s.revenue)} hint={`Servis ${fmtMoney(s.repairRevenue)} · tovar ${fmtMoney(s.orderRevenue)}`} icon={<TrendingUp className="size-4" />} tone="green" />
+        <StatCard label="Tržby" value={fmtMoney(s.revenue)} hint={`Servis ${fmtMoney(s.repairRevenue)} · tovar ${fmtMoney(s.orderRevenue)}${s.phoneRevenue ? ` · telefóny ${fmtMoney(s.phoneRevenue)}` : ''}`} icon={<TrendingUp className="size-4" />} tone="green" />
         <StatCard label="Zisk" value={fmtMoney(s.profit)} hint={`Marža ${s.margin.toFixed(0)} %`} icon={<BarChart3 className="size-4" />} tone="orange" />
         <StatCard label="Vydané zákazky" value={s.rs.length} hint={`Priemer ${fmtMoney(s.avgRepair)} · prijatých ${createdRepairs.data.filter((r) => !isClaim(r)).length} · reklamácií ${s.claims.length}`} icon={<Wrench className="size-4" />} tone="blue" />
-        <StatCard label="Priemerná doba opravy" value={`${s.avgDays.toFixed(1)} dňa`} hint={`Predané objednávky: ${s.os.length}`} icon={<Clock className="size-4" />} tone="violet" />
+        <StatCard label="Priemerná doba opravy" value={`${s.avgDays.toFixed(1)} dňa`} hint={`Predané objednávky: ${s.os.length} · telefóny: ${s.phonesSold}${s.phonesSold ? ` (zisk ${fmtMoney(s.phoneProfit)})` : ''}`} icon={<Clock className="size-4" />} tone="violet" />
       </div>
 
       <Card title="Tržby a zisk za posledných 12 mesiacov" className="mb-5">

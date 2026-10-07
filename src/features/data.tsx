@@ -4,8 +4,8 @@ import { subDays } from 'date-fns';
 import { db } from '@/lib/firebase';
 import { col } from '@/lib/db';
 import { useLiveDoc, useLiveQuery } from '@/lib/hooks';
-import { DEFAULT_SETTINGS, OPEN_ORDER_STATUSES, OPEN_REPAIR_STATUSES } from '@/lib/constants';
-import type { BusinessSettings, CalendarEvent, Customer, Order, PriceItem, Repair } from '@/lib/types';
+import { DEFAULT_SETTINGS, OPEN_ORDER_STATUSES, OPEN_PHONE_STATUSES, OPEN_REPAIR_STATUSES } from '@/lib/constants';
+import type { BusinessSettings, CalendarEvent, Customer, Order, Phone, PriceItem, Repair } from '@/lib/types';
 
 interface DataState {
   settings: BusinessSettings;
@@ -14,6 +14,8 @@ interface DataState {
   customers: Customer[];
   priceList: PriceItem[];
   events: CalendarEvent[];
+  /** Telefóny na sklade + nedávno predané/vyradené. */
+  phones: Phone[];
   loading: boolean;
 }
 
@@ -45,6 +47,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const customers = useLiveQuery<Customer>(() => query(col.customers(), orderBy('name')), 'customers');
   const priceList = useLiveQuery<PriceItem>(() => query(col.priceList(), orderBy('name')), 'pricelist');
   const events = useLiveQuery<CalendarEvent>(() => query(col.events(), where('start', '>=', eventsSince)), `events-${dayKey}`);
+  const phonesOpen = useLiveQuery<Phone>(() => query(col.phones(), where('status', 'in', OPEN_PHONE_STATUSES)), 'phones-open');
+  const phonesRecent = useLiveQuery<Phone>(() => query(col.phones(), where('closedAt', '>=', since)), `phones-recent-${dayKey}`);
 
   const value = useMemo<DataState>(
     () => ({
@@ -54,9 +58,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       customers: customers.data,
       priceList: priceList.data,
       events: events.data,
+      phones: mergeById(phonesRecent.data, phonesOpen.data).sort(byCreatedDesc),
       loading: repairsOpen.loading || ordersOpen.loading,
     }),
-    [settingsDoc.data, repairsOpen.data, repairsRecent.data, ordersOpen.data, ordersRecent.data, customers.data, priceList.data, events.data, repairsOpen.loading, ordersOpen.loading],
+    [settingsDoc.data, repairsOpen.data, repairsRecent.data, ordersOpen.data, ordersRecent.data, customers.data, priceList.data, events.data, phonesOpen.data, phonesRecent.data, repairsOpen.loading, ordersOpen.loading],
   );
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }

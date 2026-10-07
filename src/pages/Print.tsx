@@ -80,7 +80,7 @@ function Qr({ text, size = 88 }: { text: string; size?: number }) {
   return <div style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
-function Header({ s, title, number, date }: { s: BusinessSettings; title: string; number: string; date: string }) {
+export function Header({ s, title, number, date }: { s: BusinessSettings; title: string; number: string; date: string }) {
   return (
     <div className="flex items-start justify-between gap-6 border-b-2 border-black pb-3">
       <div className="text-[11px] leading-snug">
@@ -102,7 +102,7 @@ function Header({ s, title, number, date }: { s: BusinessSettings; title: string
   );
 }
 
-function Block({ title, children }: { title: string; children: ReactNode }) {
+export function Block({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="mt-4 break-inside-avoid">
       <p className="mb-1 text-[10px] font-bold tracking-wider text-stone-500 uppercase">{title}</p>
@@ -111,7 +111,7 @@ function Block({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function KV({ k, v }: { k: string; v?: ReactNode }) {
+export function KV({ k, v }: { k: string; v?: ReactNode }) {
   if (!v) return null;
   return (
     <p>
@@ -411,7 +411,7 @@ function ClaimHandover({ repair: r, s }: { repair: Repair; s: BusinessSettings }
   );
 }
 
-function Signatures({ left, right }: { left: string; right: string }) {
+export function Signatures({ left, right }: { left: string; right: string }) {
   return (
     <div className="mt-10 grid grid-cols-2 gap-16 text-center text-[11px]">
       <div className="border-t border-black pt-1">{left}</div>

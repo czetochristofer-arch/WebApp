@@ -201,6 +201,94 @@ export interface PriceItem {
   updatedAt?: Timestamp;
 }
 
+// ------------------------------------------------------------------ telefóny z výkupu (na predaj)
+
+export type PhoneStatus = 'na_repas' | 'pripravene' | 'vystavene' | 'rezervovane' | 'predane' | 'vyradene';
+export type PhoneGrade = 'A' | 'B' | 'C';
+
+export interface PhoneSeller {
+  name: string;
+  phone?: string;
+  /** Trvalé bydlisko. */
+  address?: string;
+  /** YYYY-MM-DD */
+  birthDate?: string;
+  /** Číslo občianskeho preukazu / dokladu totožnosti. */
+  idDocument?: string;
+  email?: string;
+  /** Účet predávajúceho pri platbe prevodom. */
+  iban?: string;
+}
+
+export interface PhoneTask {
+  id: string;
+  name: string;
+  done: boolean;
+}
+
+export interface PhoneCost {
+  id: string;
+  name: string;
+  amount: number;
+  at?: Timestamp | null;
+}
+
+export interface PhoneSale {
+  price: number;
+  paymentMethod: PaymentMethod;
+  buyer: CustomerRef;
+  warrantyMonths: number;
+  at: Timestamp;
+}
+
+export interface PhoneDevice {
+  type: DeviceType;
+  brand: string;
+  model: string;
+  storage?: string;
+  color?: string;
+  imei?: string;
+  imei2?: string;
+  serial?: string;
+  /** Kondícia batérie v % (ak je známa). */
+  batteryHealth?: number | null;
+  accessories?: string;
+}
+
+export interface Phone {
+  id: string;
+  number: string;
+  seq: number;
+  status: PhoneStatus;
+  grade: PhoneGrade;
+  device: PhoneDevice;
+  /** Kontrola funkčnosti pri výkupe: true = v poriadku, false = chyba, null = netestované. */
+  checks: Record<string, boolean | null>;
+  defects?: string;
+  seller: PhoneSeller;
+  purchasePrice: number;
+  purchasePayment: 'hotovost' | 'prevod';
+  purchasedAt: Timestamp;
+  sellerDeclaration: boolean;
+  tasks: PhoneTask[];
+  costs: PhoneCost[];
+  targetPrice?: number | null;
+  minPrice?: number | null;
+  location?: string;
+  listed?: boolean;
+  reservedFor?: string;
+  sale?: PhoneSale | null;
+  photos: Photo[];
+  notes?: string;
+  history: HistoryEntry[];
+  keywords: string[];
+  createdAt: Timestamp;
+  updatedAt?: Timestamp;
+  /** Kedy bol telefón predaný alebo vyradený. */
+  closedAt?: Timestamp | null;
+  createdBy?: string;
+}
+
 export interface BusinessSettings {
   name: string;
   legalName?: string;
@@ -217,6 +305,9 @@ export interface BusinessSettings {
   repairPrefix: string;
   orderPrefix: string;
   claimPrefix?: string;
+  phonePrefix?: string;
+  /** Záruka na predané (použité) telefóny v mesiacoch. */
+  phoneWarrantyMonths?: number;
   defaultWarrantyMonths: number;
   protocolTerms: string;
   smsReadyTemplate: string;

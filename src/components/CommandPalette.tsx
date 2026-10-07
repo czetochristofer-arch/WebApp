@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getDocs, limit, orderBy, query, where } from 'firebase/firestore';
-import { CornerDownLeft, Package, Search, Sparkles, User, Wrench } from 'lucide-react';
+import { CornerDownLeft, Package, Search, Smartphone, Sparkles, User, Wrench } from 'lucide-react';
+import { phoneName } from '@/lib/phones';
 import { useData } from '@/features/data';
 import { col } from '@/lib/db';
 import { matches, searchToken } from '@/lib/keywords';
 import { useDebounced } from '@/lib/hooks';
 import { fmtPhone } from '@/lib/format';
-import { orderStatus, repairStatus } from '@/lib/constants';
+import { orderStatus, phoneStatus, repairStatus } from '@/lib/constants';
 import type { Order, Repair } from '@/lib/types';
 import { NAV } from './nav';
 import { Badge, Kbd, cx } from './ui';
@@ -30,7 +31,7 @@ export function CommandPalette({ open, onClose, onAsk }: { open: boolean; onClos
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
-  const { repairs, orders, customers } = useData();
+  const { repairs, orders, customers, phones } = useData();
   const dq = useDebounced(q, 300);
 
   useEffect(() => {
@@ -119,6 +120,22 @@ export function CommandPalette({ open, onClose, onAsk }: { open: boolean; onClos
         run: () => go(`/objednavky/${o.id}`),
       });
     }
+    for (const p of phones.filter((p) => matches([p.number, p.device.brand, p.device.model, p.device.storage, p.device.imei, p.device.serial, p.seller?.name], text)).slice(0, 6)) {
+      const st = phoneStatus(p.status);
+      out.push({
+        key: 'p' + p.id,
+        group: 'Telefóny',
+        icon: <Smartphone className="size-4" />,
+        title: (
+          <>
+            <span className="font-semibold">{p.number}</span> · {phoneName(p)}
+          </>
+        ),
+        subtitle: [p.device.color, p.device.imei && `IMEI …${p.device.imei.slice(-4)}`, p.targetPrice != null && `${p.targetPrice} €`].filter(Boolean).join(' · '),
+        right: <Badge tone={st.tone}>{st.short}</Badge>,
+        run: () => go(`/telefony/${p.id}`),
+      });
+    }
     for (const c of customers.filter((c) => matches([c.name, c.phone, c.email, c.company], text)).slice(0, 6)) {
       out.push({
         key: 'c' + c.id,
@@ -148,7 +165,7 @@ export function CommandPalette({ open, onClose, onAsk }: { open: boolean; onClos
     });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, repairs, orders, customers, remote]);
+  }, [q, repairs, orders, customers, phones, remote]);
 
   useEffect(() => setActive(0), [q]);
   useEffect(() => {

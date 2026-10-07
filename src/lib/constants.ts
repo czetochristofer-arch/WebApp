@@ -1,6 +1,8 @@
 import { addDays, addMonths } from 'date-fns';
 import type {
   BusinessSettings,
+  PhoneGrade,
+  PhoneStatus,
   ClaimResolution,
   DeviceType,
   EventType,
@@ -86,6 +88,43 @@ export const ORDER_STATUSES: { id: OrderStatus; label: string; tone: Tone; open:
 export const OPEN_ORDER_STATUSES = ORDER_STATUSES.filter((s) => s.open).map((s) => s.id);
 export const orderStatus = (id: OrderStatus) => ORDER_STATUSES.find((s) => s.id === id) ?? ORDER_STATUSES[0];
 
+export const PHONE_STATUSES: { id: PhoneStatus; label: string; short: string; tone: Tone; open: boolean }[] = [
+  { id: 'na_repas', label: 'Čaká na repas / opravu', short: 'Na repas', tone: 'amber', open: true },
+  { id: 'pripravene', label: 'Pripravené na predaj', short: 'Pripravené', tone: 'blue', open: true },
+  { id: 'vystavene', label: 'Vystavené v prevádzke', short: 'Vystavené', tone: 'green', open: true },
+  { id: 'rezervovane', label: 'Rezervované', short: 'Rezervované', tone: 'violet', open: true },
+  { id: 'predane', label: 'Predané', short: 'Predané', tone: 'cyan', open: false },
+  { id: 'vyradene', label: 'Na diely / vyradené', short: 'Vyradené', tone: 'gray', open: false },
+];
+export const OPEN_PHONE_STATUSES = PHONE_STATUSES.filter((s) => s.open).map((s) => s.id);
+export const phoneStatus = (id: PhoneStatus) => PHONE_STATUSES.find((s) => s.id === id) ?? PHONE_STATUSES[0];
+
+export const PHONE_GRADES: { id: PhoneGrade; label: string; text: string; tone: Tone }[] = [
+  { id: 'A', label: 'A – ako nový', text: 'Bez viditeľných stôp používania alebo len minimálne', tone: 'green' },
+  { id: 'B', label: 'B – dobrý stav', text: 'Bežné stopy používania, jemné škrabance', tone: 'blue' },
+  { id: 'C', label: 'C – viditeľné opotrebenie', text: 'Výraznejšie škrabance, otlaky alebo poškodenie', tone: 'orange' },
+];
+export const phoneGrade = (id: PhoneGrade) => PHONE_GRADES.find((g) => g.id === id) ?? PHONE_GRADES[1];
+
+/** Kontrola funkčnosti pri výkupe (tlačí sa na výkupný doklad). */
+export const PHONE_CHECKS: { id: string; label: string }[] = [
+  { id: 'displej', label: 'Displej' },
+  { id: 'dotyk', label: 'Dotyková vrstva' },
+  { id: 'fotoaparaty', label: 'Fotoaparáty' },
+  { id: 'reproduktory', label: 'Reproduktory' },
+  { id: 'mikrofon', label: 'Mikrofón' },
+  { id: 'nabijanie', label: 'Nabíjanie' },
+  { id: 'siet', label: 'SIM / mobilná sieť' },
+  { id: 'wifi', label: 'Wi-Fi / Bluetooth' },
+  { id: 'biometria', label: 'Face ID / Touch ID / odtlačok' },
+  { id: 'tlacidla', label: 'Tlačidlá' },
+  { id: 'ucty', label: 'Odhlásený z iCloud / Google účtu' },
+  { id: 'reset', label: 'Obnovené továrenské nastavenia' },
+];
+
+export const PHONE_TASK_PRESETS = ['Výmena batérie', 'Výmena displeja', 'Zadné sklo', 'Výmena konektora', 'Čistenie a kontrola', 'Aktualizácia softvéru', 'Nové ochranné sklo'];
+export const STORAGE_PRESETS = ['32 GB', '64 GB', '128 GB', '256 GB', '512 GB', '1 TB'];
+
 export const PRIORITIES: { id: Priority; label: string; tone: Tone }[] = [
   { id: 'nizka', label: 'Nízka', tone: 'gray' },
   { id: 'normalna', label: 'Normálna', tone: 'blue' },
@@ -168,6 +207,8 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   repairPrefix: 'Z',
   orderPrefix: 'O',
   claimPrefix: 'R',
+  phonePrefix: 'V',
+  phoneWarrantyMonths: 12,
   defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
   protocolTerms: DEFAULT_TERMS,
   smsReadyTemplate: 'Dobrý deň, Vaše zariadenie {zariadenie} (zákazka {cislo}) je pripravené na vyzdvihnutie. Cena: {cena}. {firma}',

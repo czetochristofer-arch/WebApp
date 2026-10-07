@@ -223,7 +223,7 @@ function eventBrief(snap: DocumentSnapshot) {
 
 // ------------------------------------------------------------------ vyhľadanie záznamu podľa čísla
 
-async function findByNumber(collection: 'repairs' | 'orders', ref: string, prefix: string) {
+async function findByNumber(collection: 'repairs' | 'orders' | 'phones', ref: string, prefix: string) {
   const col = db().collection(collection);
   const clean = ref.trim();
   const m = clean.match(/^([A-Za-z]*)[-\s]?(\d+)$/);
@@ -247,6 +247,47 @@ async function textSearch(collection: string, q: string, fields: (d: DocumentDat
 
 const CLAIM_LABEL: Record<string, string> = { oprava: 'Uznaná – opravou', vymena: 'Uznaná – výmenou', vratenie: 'Uznaná – vrátením peňazí', zamietnuta: 'Zamietnutá' };
 const PART_LABEL: Record<string, string> = { treba_objednat: 'treba objednať', objednane: 'objednané', dorucene: 'doručené', na_sklade: 'na sklade' };
+
+const PHONE_STATUSES = ['na_repas', 'pripravene', 'vystavene', 'rezervovane', 'predane', 'vyradene'] as const;
+const OPEN_PHONE = ['na_repas', 'pripravene', 'vystavene', 'rezervovane'];
+const PHONE_LABEL: Record<string, string> = {
+  na_repas: 'Čaká na repas / opravu',
+  pripravene: 'Pripravené na predaj',
+  vystavene: 'Vystavené v prevádzke',
+  rezervovane: 'Rezervované',
+  predane: 'Predané',
+  vyradene: 'Na diely / vyradené',
+};
+const phoneCost = (p: DocumentData) => round2((p.purchasePrice || 0) + (p.costs ?? []).reduce((s: number, c: { amount?: number }) => s + (c.amount || 0), 0));
+
+function phoneBrief(snap: DocumentSnapshot) {
+  const p = snap.data()!;
+  const cost = phoneCost(p);
+  const price = p.sale?.price ?? p.targetPrice ?? null;
+  const bought = ts(p.purchasedAt) ?? ts(p.createdAt);
+  return {
+    id: snap.id,
+    cislo: p.number,
+    telefon: [p.device?.brand, p.device?.model, p.device?.storage].filter(Boolean).join(' '),
+    farba: p.device?.color || undefined,
+    imei: p.device?.imei || undefined,
+    stav: p.status,
+    stav_popis: PHONE_LABEL[p.status] ?? p.status,
+    trieda: p.grade,
+    bateria: p.device?.batteryHealth ?? undefined,
+    vykupna_cena: p.purchasePrice,
+    naklady_repas: round2(cost - (p.purchasePrice || 0)),
+    naklady_spolu: cost,
+    cielova_cena: p.targetPrice ?? null,
+    predajna_cena: p.sale?.price ?? undefined,
+    zisk: price != null ? round2(price - cost) : null,
+    ulohy_na_repas: (p.tasks ?? []).filter((t: { done: boolean }) => !t.done).map((t: { name: string }) => t.name),
+    umiestnenie: p.location || undefined,
+    vykupene: bought ? localYmd(bought) : null,
+    dni_na_sklade: bought ? Math.floor(((ts(p.closedAt) ?? new Date()).getTime() - bought.getTime()) / 86400000) : null,
+    rezervovane_pre: p.status === 'rezervovane' ? p.reservedFor || undefined : undefined,
+  };
+}
 
 const notFound = (what: string) => ({ result: { chyba: `${what} sa nenašla. Skús vyhľadávanie.` } });
 
@@ -649,6 +690,84 @@ export const TOOLS = [
   }),
 
   tool({
+    name: 'telefony',
+    description:
+      'Telefóny z výkupu určené na predaj (sklad): stav (na repas, pripravené, vystavené, rezervované, predané, vyradené), trieda A/B/C, výkupná cena, náklady na repas, cieľová cena, očakávaný zisk, úlohy na repas, dni na sklade. Bez filtra vráti telefóny na sklade.',
+    schema: z.object({
+      stavy: z.array(z.enum(PHONE_STATUSES)).optional(),
+      hladaj: z.string().optional().describe('Model, IMEI alebo číslo výkupu (V-…).'),
+    }),
+    label: (i) => (i.hladaj ? `Hľadám telefón „${i.hladaj}“` : 'Pozerám sklad telefónov'),
+    run: async ({ stavy, hladaj }) => {
+      let docs: DocumentSnapshot[];
+      if (hladaj) docs = await textSearch('phones', hladaj, (p) => [p.number, p.device?.brand, p.device?.model, p.device?.storage, p.device?.imei, p.device?.serial], 20);
+      else docs = (await db().collection('phones').where('status', 'in', stavy?.length ? stavy : OPEN_PHONE).limit(200).get()).docs;
+      const list = docs.map(phoneBrief).filter((p) => !stavy?.length || stavy.includes(p.stav));
+      const stock = list.filter((p) => OPEN_PHONE.includes(p.stav));
+      return {
+        result: {
+          pocet: list.length,
+          hodnota_skladu: round2(stock.reduce((s, p) => s + p.naklady_spolu, 0)),
+          ocakavany_zisk: round2(stock.reduce((s, p) => s + (p.zisk ?? 0), 0)),
+          telefony: list.slice(0, 60),
+        },
+      };
+    },
+  }),
+
+  tool({
+    name: 'uprav_telefon',
+    description: 'Upraví telefón zo skladu: stav (napr. vystavené, rezervované), cieľová/najnižšia cena, umiestnenie, pridanie nákladu na repas, označenie úlohy repasu ako hotovej. Predaj a výkup sa robia v aplikácii (doklady s podpisom).',
+    schema: z.object({
+      telefon: z.string().describe('Číslo výkupu (V-1001) alebo ID.'),
+      stav: z.enum(['na_repas', 'pripravene', 'vystavene', 'rezervovane', 'vyradene']).optional(),
+      rezervovane_pre: z.string().optional(),
+      cielova_cena: money.optional(),
+      najnizsia_cena: money.optional(),
+      umiestnenie: z.string().optional(),
+      pridaj_naklad: z.object({ nazov: z.string(), suma: money }).optional(),
+      hotova_uloha: z.string().optional().describe('Názov (alebo časť) úlohy repasu, ktorá je hotová.'),
+      nova_uloha: z.string().optional(),
+    }),
+    label: (i) => `Upravujem telefón ${i.telefon}`,
+    run: async (i, ctx) => {
+      const snap = await findByNumber('phones', i.telefon, ctx.settings.phonePrefix || 'V');
+      if (!snap) return notFound('Telefón');
+      const p = snap.data()!;
+      const update: DocumentData = { updatedAt: FieldValue.serverTimestamp() };
+      const notes: string[] = [];
+      if (i.stav && i.stav !== p.status) {
+        update.status = i.stav;
+        update.closedAt = i.stav === 'vyradene' ? FieldValue.serverTimestamp() : null;
+        notes.push(`Stav: ${PHONE_LABEL[p.status]} → ${PHONE_LABEL[i.stav]}`);
+      }
+      if (i.rezervovane_pre !== undefined) update.reservedFor = i.rezervovane_pre;
+      if (i.cielova_cena !== undefined) update.targetPrice = i.cielova_cena;
+      if (i.najnizsia_cena !== undefined) update.minPrice = i.najnizsia_cena;
+      if (i.umiestnenie !== undefined) update.location = i.umiestnenie;
+      if (i.pridaj_naklad) {
+        update.costs = [...(p.costs ?? []), { id: newItemId(), name: i.pridaj_naklad.nazov, amount: i.pridaj_naklad.suma, at: Timestamp.now() }];
+        notes.push(`Náklad na repas: ${i.pridaj_naklad.nazov} ${i.pridaj_naklad.suma} €`);
+      }
+      let tasks = p.tasks ?? [];
+      if (i.hotova_uloha) {
+        const q = i.hotova_uloha.toLowerCase();
+        tasks = tasks.map((t: { name: string; done: boolean }) => (t.name.toLowerCase().includes(q) ? { ...t, done: true } : t));
+        notes.push(`Repas: ${i.hotova_uloha} – hotové`);
+      }
+      if (i.nova_uloha) {
+        tasks = [...tasks, { id: newItemId(), name: i.nova_uloha, done: false }];
+        notes.push(`Repas – nová úloha: ${i.nova_uloha}`);
+      }
+      if (i.hotova_uloha || i.nova_uloha) update.tasks = tasks;
+      notes.push('(upravené AI asistentom)');
+      update.history = FieldValue.arrayUnion(...notes.map((t) => history(ctx.actor, t)));
+      await snap.ref.update(update);
+      return { result: { ok: true, telefon: phoneBrief(await snap.ref.get()) }, action: { label: `Upravený telefón ${p.number}`, link: `/telefony/${snap.id}` } };
+    },
+  }),
+
+  tool({
     name: 'zoznam_objednavok',
     description: 'Zoznam malých objednávok tovaru (puzdrá, sklá, nabíjačky…). Bez filtra vráti otvorené objednávky.',
     schema: z.object({ stavy: z.array(orderStatus).optional(), limit: z.number().int().min(1).max(100).optional() }),
@@ -958,11 +1077,15 @@ export const TOOLS = [
     run: async ({ od, do: to }) => {
       const from = startOfLocalDay(od);
       const until = endOfLocalDay(to);
-      const [closedR, closedO, created] = await Promise.all([
+      const [closedR, closedO, created, closedP] = await Promise.all([
         db().collection('repairs').where('closedAt', '>=', from).where('closedAt', '<=', until).get(),
         db().collection('orders').where('closedAt', '>=', from).where('closedAt', '<=', until).get(),
         db().collection('repairs').where('createdAt', '>=', from).where('createdAt', '<=', until).get(),
+        db().collection('phones').where('closedAt', '>=', from).where('closedAt', '<=', until).get(),
       ]);
+      const ps = closedP.docs.map((d) => d.data()).filter((p) => p.status === 'predane' && p.sale);
+      const pRev = ps.reduce((s, p) => s + (p.sale.price || 0), 0);
+      const pCost = ps.reduce((s, p) => s + phoneCost(p), 0);
       const rs = closedR.docs.map((d) => d.data()).filter((r) => r.status === 'vydane');
       const os = closedO.docs.map((d) => d.data()).filter((o) => o.status === 'vydana');
       const rRev = rs.reduce((s, r) => s + repairSum(r), 0);
@@ -979,8 +1102,9 @@ export const TOOLS = [
       return {
         result: {
           obdobie: `${od} – ${to}`,
-          trzby_spolu: round2(rRev + oRev),
-          zisk_spolu: round2(rRev + oRev - rCost - oCost),
+          trzby_spolu: round2(rRev + oRev + pRev),
+          zisk_spolu: round2(rRev + oRev + pRev - rCost - oCost - pCost),
+          telefony: { predane: ps.length, trzby: round2(pRev), naklady: round2(pCost), zisk: round2(pRev - pCost) },
           servis: { vydane_zakazky: rs.length, trzby: round2(rRev), naklady: round2(rCost), priemerna_zakazka: rs.length ? round2(rRev / rs.length) : 0 },
           objednavky: { vydane: os.length, trzby: round2(oRev), naklady: round2(oCost) },
           prijate_zakazky: created.size,

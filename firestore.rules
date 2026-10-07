@@ -40,9 +40,9 @@ service cloud.firestore {
     // Obchodné dáta: členovia môžu čítať, vytvárať a upravovať; mazať iba majiteľ.
     match /{collection}/{docId} {
       allow read, create, update: if isMember()
-        && collection in ['customers', 'repairs', 'orders', 'events', 'priceList'];
+        && collection in ['customers', 'repairs', 'orders', 'events', 'priceList', 'phones'];
       allow delete: if (isMember() && collection in ['events', 'priceList'])
-        || (isOwner() && collection in ['customers', 'repairs', 'orders']);
+        || (isOwner() && collection in ['customers', 'repairs', 'orders', 'phones']);
     }
 
     // Konverzácie s AI asistentom zapisuje iba server; používateľ vidí len svoje.

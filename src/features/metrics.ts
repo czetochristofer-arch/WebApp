@@ -2,7 +2,7 @@ import { addDays, endOfDay, isWithinInterval, startOfDay } from 'date-fns';
 import { CLAIM_DAYS } from '@/lib/constants';
 import type { Timestamp } from 'firebase/firestore';
 import { toDate } from '@/lib/format';
-import type { LineItem, Order, Repair } from '@/lib/types';
+import type { LineItem, Order, Phone, Repair } from '@/lib/types';
 import { isOverdue } from '@/components/domain';
 
 export const isRepairOpen = (r: Repair) => r.status !== 'vydane' && r.status !== 'zrusene';
@@ -26,22 +26,27 @@ export function inRange(ts: Timestamp | null | undefined, from: Date, to: Date) 
   return !!d && isWithinInterval(d, { start: startOfDay(from), end: endOfDay(to) });
 }
 
-/** Tržby = vydané zákazky a objednávky podľa dátumu vydania. */
-export function revenue(repairs: Repair[], orders: Order[], from: Date, to: Date) {
+/** Tržby = vydané zákazky, objednávky a predané telefóny podľa dátumu vydania / predaja. */
+export function revenue(repairs: Repair[], orders: Order[], from: Date, to: Date, phones: Phone[] = []) {
   const rs = repairs.filter((r) => r.status === 'vydane' && inRange(r.closedAt, from, to));
   const os = orders.filter((o) => o.status === 'vydana' && inRange(o.closedAt, from, to));
+  const ps = phones.filter((p) => p.status === 'predane' && p.sale && inRange(p.closedAt, from, to));
   const repairRevenue = rs.reduce((s, r) => s + repairAmount(r), 0);
   const repairCost = rs.reduce((s, r) => s + (r.totalCost || 0), 0);
   const orderRevenue = os.reduce((s, o) => s + (o.total || 0), 0);
   const orderCost = os.reduce((s, o) => s + (o.totalCost || 0), 0);
+  const phoneRevenue = ps.reduce((s, p) => s + (p.sale?.price || 0), 0);
+  const phoneCost = ps.reduce((s, p) => s + (p.purchasePrice || 0) + (p.costs ?? []).reduce((a, c) => a + (c.amount || 0), 0), 0);
   return {
     repairs: rs,
     orders: os,
+    phones: ps,
     repairRevenue,
     orderRevenue,
-    revenue: repairRevenue + orderRevenue,
-    cost: repairCost + orderCost,
-    profit: repairRevenue + orderRevenue - repairCost - orderCost,
+    phoneRevenue,
+    revenue: repairRevenue + orderRevenue + phoneRevenue,
+    cost: repairCost + orderCost + phoneCost,
+    profit: repairRevenue + orderRevenue + phoneRevenue - repairCost - orderCost - phoneCost,
   };
 }
 

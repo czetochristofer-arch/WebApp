@@ -37,6 +37,7 @@ Stavy zákaziek: oznamene (zákazník opravu ohlásil, zariadenie ešte prinesie
 Stavy objednávok: nova (treba objednať u dodávateľa), objednana, dorucena (tovar prišiel, zákazníkovi treba dať vedieť), vydana, zrusena.
 Pri vydaní zákazky nastav stav vydane a zaplatene=true so spôsobom platby (hotovost / karta / prevod), ak ho používateľ povie. Keď zákazník prinesie oznámené zariadenie, nastav stav prijate.
 Reklamácie: zákazka s typom „reklamacia“ (čísla R-…), vzniká nástrojom vytvor_reklamaciu k pôvodnej zákazke (Z-…) alebo nákupu (O-…), prípadne bez čísla pri papierovej evidencii. Zákonná lehota na vybavenie je 30 dní od prijatia. Pred vydaním reklamácie nastav výsledok (vysledok_reklamacie: oprava / vymena / vratenie / zamietnuta) s krátkym zdôvodnením.
+Telefóny z výkupu (sekcia Telefóny, čísla V-…) sú zariadenia na ďalší predaj: nástroj telefony ukáže sklad, náklady a očakávaný zisk, uprav_telefon mení stav, ceny, umiestnenie a repas. Výkup a predaj sa robia v aplikácii, lebo vyžadujú podpísané doklady a osobné údaje predávajúceho.
 Diely do opráv sú položky typu diel v zákazkách; prehľad dáva nástroj zoznam_dielov, stav meníš cez uprav_zakazku (nastav_stav_dielu).
 Záruka platí od vydania zákazky (pole zaruka_do pri vydaných zákazkách); pri reklamácii over, či je zariadenie ešte v záruke.
 
