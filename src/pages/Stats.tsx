@@ -12,7 +12,7 @@ import {
 import { sk } from 'date-fns/locale';
 import { BarChart3, Clock, Package, Table2, TrendingUp, Wrench } from 'lucide-react';
 import { useData } from '@/features/data';
-import { receivedAt, inRange, repairAmount } from '@/features/metrics';
+import { isClaim, receivedAt, inRange, repairAmount } from '@/features/metrics';
 import { Button, Card, EmptyState, Input, PageHeader, Segmented, StatCard, cx } from '@/components/ui';
 import { col } from '@/lib/db';
 import { PAYMENT_METHODS } from '@/lib/constants';
@@ -58,10 +58,13 @@ export default function StatsPage() {
   const orders = closedOrders.data.length ? closedOrders.data : loadedOrders;
 
   const s = useMemo(() => {
-    const rs = repairs.filter((r) => r.status === 'vydane' && inRange(r.closedAt, from, to));
+    const closedAll = repairs.filter((r) => r.status === 'vydane' && inRange(r.closedAt, from, to));
+    // Reklamácie sa do počtu a priemeru zákaziek nerátajú; prípadné platby a náklady áno.
+    const rs = closedAll.filter((r) => !isClaim(r));
+    const claims = closedAll.filter(isClaim);
     const os = orders.filter((o) => o.status === 'vydana' && inRange(o.closedAt, from, to));
-    const repairRevenue = rs.reduce((a, r) => a + repairAmount(r), 0);
-    const repairCost = rs.reduce((a, r) => a + (r.totalCost || 0), 0);
+    const repairRevenue = closedAll.reduce((a, r) => a + repairAmount(r), 0);
+    const repairCost = closedAll.reduce((a, r) => a + (r.totalCost || 0), 0);
     const orderRevenue = os.reduce((a, o) => a + (o.total || 0), 0);
     const orderCost = os.reduce((a, o) => a + (o.totalCost || 0), 0);
     const revenue = repairRevenue + orderRevenue;
@@ -97,7 +100,8 @@ export default function StatsPage() {
       repairRevenue,
       orderRevenue,
       margin: revenue ? (profit / revenue) * 100 : 0,
-      avgRepair: rs.length ? repairRevenue / rs.length : 0,
+      avgRepair: rs.length ? rs.reduce((a, r) => a + repairAmount(r), 0) / rs.length : 0,
+      claims,
       avgDays: durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : 0,
       topItems: [...byItem.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 8),
       topBrands: [...byBrand.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
@@ -143,7 +147,7 @@ export default function StatsPage() {
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Tržby" value={fmtMoney(s.revenue)} hint={`Servis ${fmtMoney(s.repairRevenue)} · tovar ${fmtMoney(s.orderRevenue)}`} icon={<TrendingUp className="size-4" />} tone="green" />
         <StatCard label="Zisk" value={fmtMoney(s.profit)} hint={`Marža ${s.margin.toFixed(0)} %`} icon={<BarChart3 className="size-4" />} tone="orange" />
-        <StatCard label="Vydané zákazky" value={s.rs.length} hint={`Priemer ${fmtMoney(s.avgRepair)} · prijatých ${createdRepairs.data.length}`} icon={<Wrench className="size-4" />} tone="blue" />
+        <StatCard label="Vydané zákazky" value={s.rs.length} hint={`Priemer ${fmtMoney(s.avgRepair)} · prijatých ${createdRepairs.data.filter((r) => !isClaim(r)).length} · reklamácií ${s.claims.length}`} icon={<Wrench className="size-4" />} tone="blue" />
         <StatCard label="Priemerná doba opravy" value={`${s.avgDays.toFixed(1)} dňa`} hint={`Predané objednávky: ${s.os.length}`} icon={<Clock className="size-4" />} tone="violet" />
       </div>
 

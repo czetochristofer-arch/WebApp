@@ -15,6 +15,7 @@ import {
   PackageOpen,
   PartyPopper,
   PhoneCall,
+  ShieldAlert,
   ShoppingCart,
   Sparkles,
   TrendingUp,
@@ -23,7 +24,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/features/auth';
 import { useData } from '@/features/data';
-import { attention, isRepairOpen, repairAmount, revenue, watchesDue } from '@/features/metrics';
+import { attention, claimDeadline, isClaim, isRepairOpen, partNeedsOrder, repairAmount, revenue, watchesDue } from '@/features/metrics';
+import { DeadlineChip } from '@/features/ClaimPanel';
 import { useShell } from '@/components/Layout';
 import { Button, StatCard, cx, toneBg, toneBorder, toneDot } from '@/components/ui';
 import { ContactButtons, DueChip, RepairStatusBadge, fillTemplate } from '@/components/domain';
@@ -46,6 +48,7 @@ export function DashboardPage() {
   const open = useMemo(() => repairs.filter(isRepairOpen), [repairs]);
   const att = useMemo(() => attention(repairs, orders), [repairs, orders]);
   const announced = useMemo(() => open.filter((r) => r.status === 'oznamene'), [open]);
+  const claims = useMemo(() => open.filter((r) => isClaim(r) && r.status !== 'hotove').sort((a, b) => claimDeadline(a).getTime() - claimDeadline(b).getTime()), [open]);
   const month = useMemo(() => revenue(repairs, orders, startOfMonth(now), endOfMonth(now)), [repairs, orders, now]);
   const firstName = (member?.name || user?.displayName || '').split(' ')[0];
 
@@ -88,6 +91,15 @@ export function DashboardPage() {
       to: '/zakazky?filter=po_termine',
     },
     {
+      key: 'claims',
+      tone: 'blue' as Tone,
+      icon: <ShieldAlert className="size-4" />,
+      title: 'Reklamácie na vybavenie',
+      hint: 'Zákonná lehota 30 dní',
+      items: claims.map((r) => <RepairMini key={r.id} r={r} extra={<DeadlineChip r={r} />} />),
+      to: '/reklamacie',
+    },
+    {
       key: 'ready',
       tone: 'green' as Tone,
       icon: <PhoneCall className="size-4" />,
@@ -116,12 +128,12 @@ export function DashboardPage() {
           key={r.id}
           r={r}
           sub={r.items
-            .filter((i) => i.kind === 'diel' && i.partStatus === 'treba_objednat')
+            .filter(partNeedsOrder)
             .map((i) => i.name)
             .join(', ')}
         />
       )),
-      to: '/zakazky',
+      to: '/objednavky?typ=diely',
     },
     {
       key: 'ordersToOrder',
@@ -130,7 +142,7 @@ export function DashboardPage() {
       title: 'Objednávky – treba objednať',
       hint: 'Tovar pre zákazníkov',
       items: att.ordersToOrder.map((o) => <OrderMini key={o.id} o={o} />),
-      to: '/objednavky',
+      to: '/objednavky?typ=tovar',
     },
     {
       key: 'ordersArrived',
@@ -452,7 +464,10 @@ function RepairCard({ r }: { r: Repair }) {
       className={cx('flex min-h-32 flex-col rounded-2xl border border-l-4 border-line bg-surface p-3.5 shadow-xs transition-colors hover:border-primary/40', s && toneBorder[s.tone])}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold text-primary tabular">{r.number}</span>
+        <span className="text-sm font-semibold text-primary tabular">
+          {r.number}
+          {isClaim(r) && <span className="ml-1.5 rounded bg-rose-50 px-1 py-0.5 text-[10px] font-bold text-rose-700 uppercase dark:bg-rose-500/15 dark:text-rose-300">Reklamácia</span>}
+        </span>
         <RepairStatusBadge status={r.status} />
       </div>
       <p className="mt-1.5 truncate font-semibold">

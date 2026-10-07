@@ -6,7 +6,7 @@ import { useData } from '@/features/data';
 import { useTheme, type ThemePref } from '@/features/theme';
 import { Badge, Button, Card, IconButton, Input, PageHeader, Segmented, Select, Textarea, Toggle } from '@/components/ui';
 import { useFeedback } from '@/components/feedback';
-import { col, getCounter, inviteMember, removeInvite, removeMember, saveSettings, setCounter } from '@/lib/db';
+import { col, getCounter, type CounterKind, inviteMember, removeInvite, removeMember, saveSettings, setCounter } from '@/lib/db';
 import { useLiveQuery } from '@/lib/hooks';
 import { fmtDateTime, toDate } from '@/lib/format';
 import type { AgentModel, BusinessSettings, Member } from '@/lib/types';
@@ -94,17 +94,20 @@ function DocumentsSection() {
   const { isOwner } = useAuth();
   const { draft, set, dirty, reset } = useSettingsDraft();
   const { run } = useFeedback();
-  const [counters, setCounters] = useState<{ repairs: number; orders: number } | null>(null);
+  const [counters, setCounters] = useState<{ repairs: number; orders: number; claims: number } | null>(null);
   useEffect(() => {
-    Promise.all([getCounter('repairs'), getCounter('orders')]).then(([repairs, orders]) => setCounters({ repairs, orders })).catch(() => undefined);
+    Promise.all([getCounter('repairs'), getCounter('orders'), getCounter('claims')])
+      .then(([repairs, orders, claims]) => setCounters({ repairs, orders, claims }))
+      .catch(() => undefined);
   }, []);
   const hours = Array.from({ length: 24 }, (_, i) => i);
   return (
     <Card title="Zákazky a doklady" icon={<FileText className="size-4" />}>
       <fieldset disabled={!isOwner} className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-3">
           <Input label="Prefix zákaziek" value={draft.repairPrefix} onChange={(e) => set('repairPrefix', e.target.value.toUpperCase())} />
           <Input label="Prefix objednávok" value={draft.orderPrefix} onChange={(e) => set('orderPrefix', e.target.value.toUpperCase())} />
+          <Input label="Prefix reklamácií" value={draft.claimPrefix ?? 'R'} onChange={(e) => set('claimPrefix', e.target.value.toUpperCase())} />
           <Input label="Záruka" suffix="mes." inputMode="numeric" value={draft.defaultWarrantyMonths} onChange={(e) => set('defaultWarrantyMonths', Number(e.target.value) || 0)} />
           <div className="grid grid-cols-2 gap-2">
             <Select label="Deň od" value={draft.workdayStart} onChange={(e) => set('workdayStart', Number(e.target.value))}>
@@ -124,9 +127,10 @@ function DocumentsSection() {
           </div>
         </div>
         {counters && (
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-3">
             <CounterInput label="Ďalšie číslo zákazky" kind="repairs" value={counters.repairs} prefix={draft.repairPrefix} />
             <CounterInput label="Ďalšie číslo objednávky" kind="orders" value={counters.orders} prefix={draft.orderPrefix} />
+            <CounterInput label="Ďalšie číslo reklamácie" kind="claims" value={counters.claims} prefix={draft.claimPrefix ?? 'R'} />
           </div>
         )}
         <Textarea label="Podmienky servisu (tlačia sa na preberací protokol)" value={draft.protocolTerms} onChange={(e) => set('protocolTerms', e.target.value)} rows={6} />
@@ -152,7 +156,7 @@ function DocumentsSection() {
   );
 }
 
-function CounterInput({ label, kind, value, prefix }: { label: string; kind: 'repairs' | 'orders'; value: number; prefix: string }) {
+function CounterInput({ label, kind, value, prefix }: { label: string; kind: CounterKind; value: number; prefix: string }) {
   const [v, setV] = useState(String(value));
   const { run } = useFeedback();
   const changed = Number(v) !== value && Number(v) > 0;

@@ -12,6 +12,7 @@ import {
   PackagePlus,
   Plus,
   Search,
+  ShieldAlert,
   Sparkles,
   Sun,
   UserPlus,
@@ -52,9 +53,11 @@ export function Layout() {
   const [quickOpen, setQuickOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const openRepairs = repairs.filter((r) => r.status !== 'vydane' && r.status !== 'zrusene').length;
+  const openAll = repairs.filter((r) => r.status !== 'vydane' && r.status !== 'zrusene');
+  const openClaims = openAll.filter((r) => r.kind === 'reklamacia').length;
+  const openRepairs = openAll.length - openClaims;
   const openOrders = orders.filter((o) => o.status !== 'vydana' && o.status !== 'zrusena').length;
-  const counts: Record<string, number> = { '/zakazky': openRepairs, '/objednavky': openOrders };
+  const counts: Record<string, number> = { '/zakazky': openRepairs, '/reklamacie': openClaims, '/objednavky': openOrders };
 
   const api: ShellApi = {
     openSearch: () => setSearchOpen(true),
@@ -280,6 +283,7 @@ function QuickCreate({ open, onClose }: { open: boolean; onClose: () => void }) 
   };
   const items = [
     { icon: <Wrench className="size-5" />, label: 'Nová zákazka', hint: 'Prijatie zariadenia do servisu', to: '/zakazky/nova' },
+    { icon: <ShieldAlert className="size-5" />, label: 'Reklamácia', hint: 'Oprava alebo tovar kúpený u nás', to: '/reklamacie/nova' },
     { icon: <PackagePlus className="size-5" />, label: 'Nová objednávka', hint: 'Puzdro, sklo, nabíjačka…', to: '/objednavky?nova=1' },
     { icon: <CalendarPlus className="size-5" />, label: 'Udalosť v kalendári', hint: 'Termín, práca, stretnutie', to: '/kalendar?nova=termin' },
     { icon: <ListTodo className="size-5" />, label: 'Úloha', hint: 'Čo treba urobiť', to: '/kalendar?nova=uloha' },

@@ -1,7 +1,8 @@
-import { endOfDay, isWithinInterval, startOfDay } from 'date-fns';
+import { addDays, endOfDay, isWithinInterval, startOfDay } from 'date-fns';
+import { CLAIM_DAYS } from '@/lib/constants';
 import type { Timestamp } from 'firebase/firestore';
 import { toDate } from '@/lib/format';
-import type { Order, Repair } from '@/lib/types';
+import type { LineItem, Order, Repair } from '@/lib/types';
 import { isOverdue } from '@/components/domain';
 
 export const isRepairOpen = (r: Repair) => r.status !== 'vydane' && r.status !== 'zrusene';
@@ -11,6 +12,11 @@ export const watchesDue = (r: Repair) => isRepairOpen(r) && r.status !== 'hotove
 export const isRepairLate = (r: Repair) => watchesDue(r) && isOverdue(r.dueAt, true);
 /** Kedy bolo zariadenie prijaté do servisu. */
 export const receivedAt = (r: Repair) => r.receivedAt ?? r.createdAt;
+export const isClaim = (r: Repair) => r.kind === 'reklamacia';
+/** Posledný deň zákonnej lehoty na vybavenie reklamácie. */
+export const claimDeadline = (r: Repair) => addDays(toDate(receivedAt(r)) ?? new Date(), CLAIM_DAYS);
+/** Diel, ktorý ešte nie je objednaný (aj diel bez stavu – napr. pridaný z cenníka). */
+export const partNeedsOrder = (i: LineItem) => i.kind === 'diel' && (!i.partStatus || i.partStatus === 'treba_objednat');
 
 /** Suma zákazky – ak nemá položky, použije sa predbežná cena. */
 export const repairAmount = (r: Repair) => (r.items?.length ? r.total : r.estimate ?? 0);
@@ -43,7 +49,7 @@ export function attention(repairs: Repair[], orders: Order[]) {
   const open = repairs.filter(isRepairOpen);
   return {
     overdue: open.filter(isRepairLate),
-    partsToOrder: open.filter((r) => r.items?.some((i) => i.kind === 'diel' && i.partStatus === 'treba_objednat')),
+    partsToOrder: open.filter((r) => r.items?.some(partNeedsOrder)),
     awaitingApproval: open.filter((r) => r.status === 'caka_schvalenie'),
     ready: open.filter((r) => r.status === 'hotove'),
     ordersToOrder: orders.filter((o) => o.status === 'nova'),

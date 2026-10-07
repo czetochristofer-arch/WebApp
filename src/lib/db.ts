@@ -27,12 +27,13 @@ import type {
   LineItem,
   Order,
   OrderStatus,
+  PartStatus,
   Photo,
   PriceItem,
   Repair,
   RepairStatus,
 } from './types';
-import { orderStatus, repairStatus } from './constants';
+import { PART_STATUSES, orderStatus, repairStatus } from './constants';
 
 export const col = {
   repairs: () => collection(db, 'repairs'),
@@ -79,7 +80,9 @@ export function totals(items: LineItem[]) {
 }
 
 /** Pridelí ďalšie poradové číslo (transakcia – bez duplicít ani pri súbežnom zápise). */
-async function nextNumber(kind: 'repairs' | 'orders', prefix: string) {
+export type CounterKind = 'repairs' | 'orders' | 'claims';
+
+async function nextNumber(kind: CounterKind, prefix: string) {
   const counterRef = doc(db, 'counters', kind);
   const seq = await runTransaction(db, async (tx) => {
     const snap = await tx.get(counterRef);
@@ -90,12 +93,12 @@ async function nextNumber(kind: 'repairs' | 'orders', prefix: string) {
   return { seq, number: `${prefix}-${seq}` };
 }
 
-export async function getCounter(kind: 'repairs' | 'orders') {
+export async function getCounter(kind: CounterKind) {
   const snap = await runTransaction(db, async (tx) => tx.get(doc(db, 'counters', kind)));
   return snap.exists() ? (snap.data().next as number) : 1001;
 }
 
-export async function setCounter(kind: 'repairs' | 'orders', next: number) {
+export async function setCounter(kind: CounterKind, next: number) {
   await setDoc(doc(db, 'counters', kind), { next }, { merge: true });
 }
 
@@ -166,8 +169,10 @@ export function newRepairId() {
 }
 
 export async function createRepair(input: RepairInput, prefix: string, id = newRepairId()) {
+  const claim = input.kind === 'reklamacia';
   const customerId = await ensureCustomer(input.customer);
-  const { seq, number } = await nextNumber('repairs', prefix);
+  // Reklamácie majú vlastné číslovanie (R-1001…), aby nenarušili rad zákaziek.
+  const { seq, number } = await nextNumber(claim ? 'claims' : 'repairs', prefix);
   const data = clean({
     ...input,
     customerId,
@@ -176,7 +181,7 @@ export async function createRepair(input: RepairInput, prefix: string, id = newR
     seq,
     ...totals(input.items),
     keywords: repairKeywords({ ...input, number }),
-    history: [history(`Zákazka vytvorená (${repairStatus(input.status).label})`)],
+    history: [history(claim ? `Reklamácia prijatá${input.claim?.originalNumber ? ` (k ${input.claim.originalNumber})` : ''}` : `Zákazka vytvorená (${repairStatus(input.status).label})`)],
     createdBy: actorName(),
   });
   await setDoc(doc(col.repairs(), id), { ...data, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), closedAt: null });
@@ -208,6 +213,28 @@ export async function updateRepair(prev: Repair, patch: Partial<RepairInput>, no
   if (note) notes.push(note);
   if (notes.length) update.history = arrayUnion(...notes.map(history));
   await updateDoc(doc(db, 'repairs', prev.id), update);
+}
+
+/**
+ * Zmena stavu dielov v zákazke. Beží v transakcii nad aktuálnym stavom zákazky,
+ * takže neprepíše iné súčasné zmeny (ceny, položky, poznámky).
+ */
+export async function setPartStatus(repairId: string, itemIds: string[], status: PartStatus, supplier?: string) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'repairs', repairId);
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error('Zákazka sa nenašla.');
+    const items = (snap.data().items ?? []) as LineItem[];
+    const names: string[] = [];
+    const next = items.map((i) => {
+      if (!itemIds.includes(i.id)) return i;
+      names.push(i.name);
+      return { ...i, partStatus: status, ...(supplier?.trim() ? { supplier: supplier.trim() } : {}) };
+    });
+    if (!names.length) return;
+    const label = PART_STATUSES.find((p) => p.id === status)?.label ?? status;
+    tx.update(ref, { items: clean(next), updatedAt: serverTimestamp(), history: arrayUnion(history(`Diely – ${label.toLowerCase()}: ${names.join(', ')}`)) });
+  });
 }
 
 export async function setRepairStatus(prev: Repair, status: RepairStatus) {

@@ -30,6 +30,10 @@ import { Logo } from '@/components/Layout';
 import type { RepairStatus } from '@/lib/types';
 
 interface PublicRepair {
+  kind?: 'oprava' | 'reklamacia';
+  claimResolution?: string | null;
+  claimNote?: string;
+  claimDeadline?: string | null;
   number: string;
   status: RepairStatus;
   statusLabel: string;
@@ -186,7 +190,7 @@ function StatusView({ data }: { data: PublicRepair }) {
       <section className="overflow-hidden rounded-3xl border border-line bg-surface shadow-sm">
         <div className="px-5 pt-5">
           <p className="text-xs font-semibold tracking-wide text-muted uppercase">
-            Zákazka {data.number}
+            {data.kind === 'reklamacia' ? 'Reklamácia' : 'Zákazka'} {data.number}
             {data.customer ? ` · ${data.customer}` : ''}
           </p>
           <h1 className="mt-1 text-xl font-bold tracking-tight">{data.device || 'Zariadenie'}</h1>
@@ -200,6 +204,19 @@ function StatusView({ data }: { data: PublicRepair }) {
             <p className="text-sm opacity-90">{info.text}</p>
           </div>
         </div>
+
+        {data.kind === 'reklamacia' && (data.claimResolution || data.claimDeadline) && (
+          <div className="mx-5 mt-3 rounded-2xl border border-line px-4 py-3 text-sm">
+            {data.claimResolution ? (
+              <>
+                <p className="font-semibold">Výsledok reklamácie: {data.claimResolution}</p>
+                {data.claimNote && <p className="mt-0.5 text-muted">{data.claimNote}</p>}
+              </>
+            ) : (
+              data.claimDeadline && <p className="text-muted">Reklamáciu vybavíme najneskôr do {day(data.claimDeadline)}.</p>
+            )}
+          </div>
+        )}
 
         {data.status !== 'zrusene' && (
           <ol className="flex items-start px-5 pt-5 pb-1">
@@ -235,10 +252,10 @@ function StatusView({ data }: { data: PublicRepair }) {
           {data.amount > 0 && data.status !== 'zrusene' && (
             <Row label={data.paid ? 'Zaplatené' : 'Zostáva doplatiť'} value={data.paid ? 'áno' : fmtMoney(data.toPay)} strong />
           )}
-          {data.status === 'vydane' && data.warrantyUntil ? (
+          {data.status === 'vydane' && data.warrantyUntil && data.kind !== 'reklamacia' ? (
             <Row label={`Záruka ${data.warranty}`} value={`do ${day(data.warrantyUntil)}`} icon={<ShieldCheck className="size-4 text-emerald-600" />} />
           ) : (
-            data.status !== 'zrusene' && <Row label="Záruka na opravu a diely" value={data.warranty} />
+            data.status !== 'zrusene' && data.kind !== 'reklamacia' && <Row label="Záruka na opravu a diely" value={data.warranty} />
           )}
         </dl>
 

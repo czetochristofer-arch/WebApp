@@ -1,6 +1,13 @@
 import type { DocumentData } from 'firebase-admin/firestore';
 import { DEFAULT_WARRANTY_MONTHS, REPAIR_LABEL, Timestamp, db, getSettings, round2, warrantyEndYmd, warrantyOf, warrantyText } from './lib/store.js';
 
+const CLAIM_LABEL: Record<string, string> = {
+  oprava: 'Uznaná – opravou',
+  vymena: 'Uznaná – výmenou',
+  vratenie: 'Uznaná – vrátením peňazí',
+  zamietnuta: 'Zamietnutá',
+};
+
 const iso = (t: unknown) => (t instanceof Timestamp ? t.toDate().toISOString() : null);
 
 /** "Ján Novák" → "Ján N." – na verejnej stránke nezobrazujeme celé meno. */
@@ -24,7 +31,13 @@ export async function publicRepairStatus(id: string) {
   const deposit = round2(r.deposit ?? 0);
   const closed = r.closedAt instanceof Timestamp ? r.closedAt.toDate() : null;
   const w = warrantyOf(r, Number(settings.defaultWarrantyMonths) || DEFAULT_WARRANTY_MONTHS);
+  const claim = r.kind === 'reklamacia';
+  const received = (r.receivedAt ?? r.createdAt) instanceof Timestamp ? (r.receivedAt ?? r.createdAt).toDate() : null;
   return {
+    kind: claim ? 'reklamacia' : 'oprava',
+    claimResolution: claim ? (CLAIM_LABEL[r.claim?.resolution] ?? null) : null,
+    claimNote: claim && r.claim?.resolution ? (r.claim?.resolutionNote ?? '') : '',
+    claimDeadline: claim && received ? new Date(received.getTime() + 30 * 86400000).toISOString() : null,
     number: r.number as string,
     status: r.status as string,
     statusLabel: REPAIR_LABEL[r.status] ?? r.status,

@@ -22,6 +22,8 @@ const SettingsPage = lazy(() => import('@/pages/Settings'));
 const AssistantPage = lazy(() => import('@/pages/Assistant'));
 const PrintPage = lazy(() => import('@/pages/Print'));
 const PublicStatusPage = lazy(() => import('@/pages/PublicStatus'));
+const ClaimsPage = lazy(() => import('@/pages/Claims'));
+const ClaimNewPage = lazy(() => import('@/pages/ClaimNew'));
 
 function PublicStatus({ id }: { id: string }) {
   return (
@@ -76,6 +78,8 @@ function AppRoutes() {
             <Route path="zakazky" element={<RepairsPage />} />
             <Route path="zakazky/nova" element={<RepairNewPage />} />
             <Route path="zakazky/:id" element={<RepairDetailPage />} />
+            <Route path="reklamacie" element={<ClaimsPage />} />
+            <Route path="reklamacie/nova" element={<ClaimNewPage />} />
             <Route path="objednavky" element={<OrdersPage />} />
             <Route path="objednavky/:id" element={<OrdersPage />} />
             <Route path="kalendar" element={<CalendarPage />} />

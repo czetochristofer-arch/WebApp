@@ -83,8 +83,30 @@ export interface Device {
   condition?: string;
 }
 
+export type RepairKind = 'oprava' | 'reklamacia';
+/** Spôsob vybavenia reklamácie. */
+export type ClaimResolution = 'oprava' | 'vymena' | 'vratenie' | 'zamietnuta';
+
+export interface ClaimInfo {
+  /** Čo sa reklamuje: oprava u nás, tovar kúpený u nás, alebo záznam mimo aplikácie (papierová evidencia). */
+  source: 'oprava' | 'nakup' | 'iny';
+  originalId?: string | null;
+  originalNumber?: string | null;
+  /** Dátum vydania opravy / predaja tovaru. */
+  originalDate?: Timestamp | null;
+  warrantyUntil?: Timestamp | null;
+  inWarranty?: boolean | null;
+  requested?: ClaimResolution | null;
+  resolution?: ClaimResolution | null;
+  resolutionNote?: string;
+  resolvedAt?: Timestamp | null;
+}
+
 export interface Repair {
   id: string;
+  /** Chýba pri bežných zákazkách (= oprava). */
+  kind?: RepairKind;
+  claim?: ClaimInfo | null;
   number: string;
   seq: number;
   status: RepairStatus;
@@ -194,6 +216,7 @@ export interface BusinessSettings {
   logoUrl?: string;
   repairPrefix: string;
   orderPrefix: string;
+  claimPrefix?: string;
   defaultWarrantyMonths: number;
   protocolTerms: string;
   smsReadyTemplate: string;

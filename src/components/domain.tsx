@@ -192,7 +192,10 @@ export function ItemsEditor({
 
   const update = (id: string, patch: Partial<LineItem>) => onChange(items.map((i) => (i.id === id ? { ...i, ...patch } : i)));
   const add = (item?: Partial<LineItem>) => {
-    onChange([...items, { id: newId(), kind: defaultKind, name: '', qty: 1, price: 0, cost: 0, partStatus: null, ...item }]);
+    const next: LineItem = { id: newId(), kind: defaultKind, name: '', qty: 1, price: 0, cost: 0, partStatus: null, ...item };
+    // Nový diel (aj z cenníka) je predvolene „treba objednať“, aby sa nestratil zo zoznamu dielov.
+    if (next.kind === 'diel' && showPartStatus && !next.partStatus) next.partStatus = 'treba_objednat';
+    onChange([...items, next]);
     setSearch('');
     setOpen(false);
   };

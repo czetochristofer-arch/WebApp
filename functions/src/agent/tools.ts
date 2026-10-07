@@ -127,6 +127,9 @@ function repairBrief(snap: DocumentSnapshot) {
     suma: round2(repairSum(r)),
     zaplatene: !!r.paid,
     priorita: r.priority,
+    typ: r.kind === 'reklamacia' ? 'reklamacia' : undefined,
+    reklamacia_k: r.kind === 'reklamacia' ? (r.claim?.originalNumber ?? null) : undefined,
+    vysledok_reklamacie: r.kind === 'reklamacia' ? (r.claim?.resolution ?? null) : undefined,
     zapisane: fmtLocal(ts(r.createdAt)),
     prijate: r.status === 'oznamene' ? null : fmtLocal(ts(r.receivedAt) ?? ts(r.createdAt)),
   };
@@ -156,6 +159,19 @@ function repairFull(snap: DocumentSnapshot, ctx: ToolContext) {
     naklady: r.totalCost,
     zaloha: r.deposit,
     sposob_platby: r.paymentMethod,
+    reklamacia:
+      r.kind === 'reklamacia'
+        ? {
+            k_zakazke: r.claim?.originalNumber ?? null,
+            zdroj: r.claim?.source,
+            zaruka_do: ts(r.claim?.warrantyUntil) ? localYmd(ts(r.claim?.warrantyUntil)!) : null,
+            v_zaruke: r.claim?.inWarranty ?? null,
+            pozaduje: r.claim?.requested ?? null,
+            vysledok: r.claim?.resolution ?? null,
+            vysledok_poznamka: r.claim?.resolutionNote || undefined,
+            lehota_do: localYmd(new Date(((ts(r.receivedAt) ?? ts(r.createdAt))?.getTime() ?? Date.now()) + 30 * 86400000)),
+          }
+        : undefined,
     zaruka: warrantyText(w),
     zaruka_do: warrantyTo,
     v_zaruke: warrantyTo ? warrantyTo >= localYmd(new Date()) : undefined,
@@ -229,6 +245,9 @@ async function textSearch(collection: string, q: string, fields: (d: DocumentDat
   return snap.docs.filter((d) => matches(fields(d.data()), q)).slice(0, limit);
 }
 
+const CLAIM_LABEL: Record<string, string> = { oprava: 'Uznaná – opravou', vymena: 'Uznaná – výmenou', vratenie: 'Uznaná – vrátením peňazí', zamietnuta: 'Zamietnutá' };
+const PART_LABEL: Record<string, string> = { treba_objednat: 'treba objednať', objednane: 'objednané', dorucene: 'doručené', na_sklade: 'na sklade' };
+
 const notFound = (what: string) => ({ result: { chyba: `${what} sa nenašla. Skús vyhľadávanie.` } });
 
 // ------------------------------------------------------------------ nástroje
@@ -295,8 +314,9 @@ export const TOOLS = [
 
   tool({
     name: 'zoznam_zakaziek',
-    description: 'Zoznam servisných zákaziek podľa filtra (stav, termín, dátum prijatia, zákazník). Bez filtra vráti otvorené (nevydané) zákazky.',
+    description: 'Zoznam servisných zákaziek a reklamácií podľa filtra (typ, stav, termín, dátum prijatia, zákazník). Bez filtra vráti otvorené (nevydané) zákazky aj reklamácie.',
     schema: z.object({
+      typ: z.enum(['oprava', 'reklamacia']).optional().describe('Len bežné zákazky alebo len reklamácie.'),
       stavy: z.array(repairStatus).optional().describe('Filtrovať podľa stavov.'),
       iba_po_termine: z.boolean().optional(),
       termin_od: ymd.optional(),
@@ -317,6 +337,8 @@ export const TOOLS = [
       const snap = await q.limit(500).get();
       let list = snap.docs.map(repairBrief);
       if (f.stavy?.length) list = list.filter((r) => f.stavy!.includes(r.stav as never));
+      if (f.typ === 'reklamacia') list = list.filter((r) => r.typ === 'reklamacia');
+      if (f.typ === 'oprava') list = list.filter((r) => r.typ !== 'reklamacia');
       if (f.iba_po_termine) list = list.filter((r) => r.po_termine);
       if (f.termin_od) list = list.filter((r) => r.termin && r.termin >= f.termin_od!);
       if (f.termin_do) list = list.filter((r) => r.termin && r.termin <= f.termin_do!);
@@ -434,6 +456,8 @@ export const TOOLS = [
       termin: ymd.optional(),
       priorita: z.enum(['nizka', 'normalna', 'vysoka', 'urgentna']).optional(),
       zaruka_mesiace: z.number().int().min(0).max(60).optional(),
+      vysledok_reklamacie: z.enum(['oprava', 'vymena', 'vratenie', 'zamietnuta']).optional().describe('Len pri reklamácii: spôsob vybavenia.'),
+      vysledok_poznamka: z.string().optional().describe('Pri reklamácii: ako bola vybavená / odôvodnenie zamietnutia (tlačí sa na doklad).'),
       poznamka_pre_zakaznika: z.string().optional(),
       interna_poznamka: z.string().optional(),
       zaplatene: z.boolean().optional(),
@@ -467,6 +491,15 @@ export const TOOLS = [
         notes.push(`Stav: ${REPAIR_LABEL[r.status]} → ${REPAIR_LABEL[i.stav]}`);
       }
       if (i.zaruka_mesiace !== undefined) update.warrantyMonths = i.zaruka_mesiace;
+      if (r.kind === 'reklamacia' && (i.vysledok_reklamacie !== undefined || i.vysledok_poznamka !== undefined)) {
+        const c = r.claim ?? { source: 'iny' };
+        update.claim = {
+          ...c,
+          ...(i.vysledok_reklamacie !== undefined ? { resolution: i.vysledok_reklamacie, resolvedAt: c.resolvedAt ?? Timestamp.now() } : {}),
+          ...(i.vysledok_poznamka !== undefined ? { resolutionNote: i.vysledok_poznamka } : {}),
+        };
+        if (i.vysledok_reklamacie) notes.push(`Výsledok reklamácie: ${CLAIM_LABEL[i.vysledok_reklamacie]}`);
+      }
       if (i.diagnostika !== undefined) update.diagnosis = i.diagnostika;
       if (i.predbezna_cena !== undefined) update.estimate = i.predbezna_cena;
       if (i.zaloha !== undefined) update.deposit = i.zaloha;
@@ -486,6 +519,132 @@ export const TOOLS = [
       await snap.ref.update(update);
       const fresh = await snap.ref.get();
       return { result: { ok: true, zakazka: repairFull(fresh, ctx) }, action: { label: `Upravená zákazka ${r.number}`, link: `/zakazky/${snap.id}` } };
+    },
+  }),
+
+  tool({
+    name: 'vytvor_reklamaciu',
+    description:
+      'Prijme reklamáciu: zariadenie opravené u nás alebo tovar kúpený u nás. Ak je zadané číslo pôvodnej zákazky (Z-…) alebo objednávky (O-…), zákazník, zariadenie a záruka sa doplnia automaticky. Lehota na vybavenie je 30 dní.',
+    schema: z.object({
+      povodna: z.string().optional().describe('Číslo pôvodnej zákazky alebo objednávky (napr. „Z-1042“, „O-1012“), ak je v aplikácii.'),
+      zakaznik: customerIn.optional().describe('Potrebné, ak pôvodná zákazka nie je v aplikácii.'),
+      zariadenie: z.object({ znacka: z.string().optional(), model: z.string().optional(), imei: z.string().optional() }).optional(),
+      vada: z.string().describe('Popis reklamovanej vady.'),
+      pozaduje: z.enum(['oprava', 'vymena', 'vratenie']).optional().describe('Požadovaný spôsob vybavenia.'),
+      poznamka: z.string().optional(),
+    }),
+    label: (i) => `Prijímam reklamáciu${i.povodna ? ` k ${i.povodna}` : ''}`,
+    run: async (i, ctx) => {
+      let original: DocumentSnapshot | null = null;
+      let source: 'oprava' | 'nakup' | 'iny' = 'iny';
+      if (i.povodna) {
+        const isOrder = /^o/i.test(i.povodna.trim());
+        original = await findByNumber(isOrder ? 'orders' : 'repairs', i.povodna, isOrder ? ctx.settings.orderPrefix : ctx.settings.repairPrefix);
+        if (!original && !isOrder) {
+          original = await findByNumber('orders', i.povodna, ctx.settings.orderPrefix);
+          if (original) source = 'nakup';
+        } else if (original) source = isOrder ? 'nakup' : 'oprava';
+        if (!original) return { result: { chyba: `Pôvodná zákazka/objednávka ${i.povodna} sa nenašla. Over číslo alebo zadaj zákazníka a zariadenie ručne (bez čísla).` } };
+      }
+      const o = original?.data();
+      if (!o && !i.zakaznik) return { result: { chyba: 'Chýba zákazník – zadaj ho, alebo číslo pôvodnej zákazky.' } };
+      const customer = o
+        ? await ensureCustomer({ id: o.customerId ?? undefined, name: o.customer?.name, phone: o.customer?.phone, email: o.customer?.email })
+        : await ensureCustomer({ id: i.zakaznik!.id, name: i.zakaznik!.meno, phone: i.zakaznik!.telefon, email: i.zakaznik!.email });
+      const closed = ts(o?.closedAt);
+      const months = source === 'nakup' ? 24 : null;
+      const wEnd = closed ? (months ? warrantyEndYmd({ months }, closed) : warrantyEndYmd(warrantyOf(o!, defaultMonths(ctx)), closed)) : null;
+      const device =
+        source === 'oprava' && o
+          ? { ...o.device, passcode: o.device?.passcode ?? '' }
+          : {
+              type: source === 'nakup' ? 'ine' : 'mobil',
+              brand: i.zariadenie?.znacka ?? '',
+              model: i.zariadenie?.model ?? (o?.items ?? []).map((x: LineItem) => x.name).join(', '),
+              imei: i.zariadenie?.imei ?? '',
+              color: '',
+              passcode: '',
+              accessories: '',
+              condition: '',
+            };
+      const { seq, number } = await nextNumber('claims', ctx.settings.claimPrefix || 'R');
+      const deadline = endOfLocalDay(localYmd(new Date(Date.now() + 30 * 86400000)));
+      const data = {
+        kind: 'reklamacia',
+        claim: {
+          source,
+          originalId: original?.id ?? null,
+          originalNumber: o?.number ?? null,
+          originalDate: closed ? Timestamp.fromDate(closed) : null,
+          warrantyUntil: wEnd ? Timestamp.fromDate(endOfLocalDay(wEnd)) : null,
+          inWarranty: wEnd ? wEnd >= localYmd(new Date()) : null,
+          requested: i.pozaduje ?? 'oprava',
+          resolution: null,
+          resolutionNote: '',
+          resolvedAt: null,
+        },
+        number,
+        seq,
+        status: 'prijate',
+        priority: 'normalna',
+        customerId: customer.id,
+        customer,
+        device,
+        problem: i.vada,
+        diagnosis: '',
+        items: [],
+        total: 0,
+        totalCost: 0,
+        estimate: null,
+        deposit: 0,
+        paid: false,
+        paymentMethod: null,
+        paidAt: null,
+        warrantyMonths: defaultMonths(ctx),
+        dueAt: Timestamp.fromDate(deadline),
+        notes: i.poznamka ?? '',
+        internalNotes: '',
+        photos: [],
+        keywords: repairKeywords({ number, customer, device }),
+        history: [history(ctx.actor, `Reklamácia prijatá AI asistentom${o?.number ? ` (k ${o.number})` : ''}`)],
+        createdBy: ctx.actor,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        closedAt: null,
+      };
+      const ref = await db().collection('repairs').add(data);
+      return {
+        result: { ok: true, id: ref.id, cislo: number, k_zakazke: o?.number ?? null, v_zaruke: data.claim.inWarranty, zaruka_do: wEnd, lehota_do: localYmd(deadline) },
+        action: { label: `Reklamácia ${number} prijatá`, link: `/zakazky/${ref.id}` },
+      };
+    },
+  }),
+
+  tool({
+    name: 'zoznam_dielov',
+    description: 'Náhradné diely v rozpracovaných zákazkách podľa stavu (treba objednať, objednané, doručené) – s dodávateľom a číslom zákazky. Použi pri otázkach „čo treba objednať“, „aké diely čakáme“.',
+    schema: z.object({ stav: z.enum(['treba_objednat', 'objednane', 'dorucene', 'na_sklade']).optional() }),
+    label: () => 'Pozerám diely',
+    run: async ({ stav }) => {
+      const snap = await db().collection('repairs').where('status', 'in', OPEN_REPAIR).get();
+      const parts = snap.docs.flatMap((d) =>
+        ((d.data().items ?? []) as LineItem[])
+          .filter((it) => it.kind === 'diel')
+          .map((it) => ({
+            diel: it.name,
+            pocet: it.qty,
+            nakup: it.cost,
+            stav: it.partStatus || 'treba_objednat',
+            stav_popis: PART_LABEL[it.partStatus || 'treba_objednat'],
+            dodavatel: it.supplier || undefined,
+            zakazka: d.data().number,
+            zariadenie: `${d.data().device?.brand ?? ''} ${d.data().device?.model ?? ''}`.trim(),
+            zakaznik: d.data().customer?.name,
+          })),
+      );
+      const list = stav ? parts.filter((p) => p.stav === stav) : parts;
+      return { result: { pocet: list.length, diely: list.slice(0, 100) } };
     },
   }),
 

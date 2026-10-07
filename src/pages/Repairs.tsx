@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { getDocs, limit, orderBy, query, where } from 'firebase/firestore';
 import { Plus, Search, Wrench } from 'lucide-react';
 import { useData } from '@/features/data';
-import { isRepairLate, isRepairOpen, repairAmount, watchesDue } from '@/features/metrics';
+import { isClaim, isRepairLate, isRepairOpen, repairAmount, watchesDue } from '@/features/metrics';
 import { Button, EmptyState, Input, PageHeader, Segmented, Select, cx } from '@/components/ui';
 import { DueChip, RepairStatusBadge } from '@/components/domain';
 import { useFeedback } from '@/components/feedback';
@@ -17,7 +17,9 @@ import type { Repair, RepairStatus } from '@/lib/types';
 type Filter = 'aktivne' | RepairStatus | 'po_termine' | 'uzavrete' | 'vsetky';
 
 export function RepairsPage() {
-  const { repairs } = useData();
+  const { repairs: all } = useData();
+  // Reklamácie majú vlastnú sekciu; pri vyhľadávaní sa zobrazia aj tu.
+  const repairs = useMemo(() => all.filter((r) => !isClaim(r)), [all]);
   const [params, setParams] = useSearchParams();
   const filter = (params.get('filter') as Filter) || 'aktivne';
   const [q, setQ] = useState(params.get('q') ?? '');

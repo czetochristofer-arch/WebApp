@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc } from 'firebase/firestore';
 import { addDays, setHours, startOfDay } from 'date-fns';
@@ -36,7 +36,8 @@ import { PAYMENT_METHODS, REPAIR_STATUSES, eventType, priority, warrantyLabel, w
 import { addRepairNote, deleteRepair, setRepairStatus, updateRepair } from '@/lib/db';
 import { fmtDate, fmtDateTime, fmtDay, fmtMoney, fmtTime } from '@/lib/format';
 import { copyText, statusUrl } from '@/lib/links';
-import { receivedAt } from '@/features/metrics';
+import { isClaim, receivedAt } from '@/features/metrics';
+import { ClaimPanel, LinkedClaims } from '@/features/ClaimPanel';
 import type { PaymentMethod, Repair } from '@/lib/types';
 
 const DRAFT_KEYS: (keyof RepairDraft)[] = [
@@ -106,16 +107,32 @@ function RepairDetail({ repair }: { repair: Repair }) {
   const [handover, setHandover] = useState(false);
   const [eventInit, setEventInit] = useState<EventDraftInit | null>(null);
   const [note, setNote] = useState('');
+  const claim = isClaim(repair);
   const [msgKind, setMsgKind] = useState<'hotovo' | 'schvalenie' | 'odkaz' | 'prazdna'>(repair.status === 'hotove' ? 'hotovo' : 'odkaz');
 
-  // Keď sa zákazka zmení inde (iné zariadenie, AI asistent) a tu nič neupravujete, prevezmeme zmeny.
+  // Keď sa zákazka zmení inde (iné zariadenie, AI asistent, zoznam dielov) a tu nič neupravujete, prevezmeme zmeny.
+  const prevRepair = useRef(repair);
   useEffect(() => {
     const fresh = toDraft(repair, settings.defaultWarrantyMonths);
+    const old = prevRepair.current;
+    prevRepair.current = repair;
     if (!dirty) {
       setDraft(fresh);
       setBase(sig(fresh));
     } else {
-      setDraft((d) => ({ ...d, status: fresh.status, photos: fresh.photos, paid: fresh.paid }));
+      // Rozpracované úpravy necháme, ale stav dielov zmenený inde (napr. „objednané“) neprepíšeme starým.
+      const mergeParts = (items: RepairDraft['items']) =>
+        items.map((i) => {
+          const before = old.items?.find((x) => x.id === i.id);
+          const now = repair.items?.find((x) => x.id === i.id);
+          if (!before || !now || i.partStatus !== before.partStatus) return i;
+          return { ...i, partStatus: now.partStatus, supplier: i.supplier === before.supplier ? now.supplier : i.supplier };
+        });
+      setDraft((d) => ({ ...d, status: fresh.status, photos: fresh.photos, paid: fresh.paid, items: mergeParts(d.items) }));
+      setBase((b) => {
+        const baseDraft = { ...fresh };
+        return b === sig(toDraft(old, settings.defaultWarrantyMonths)) ? sig(baseDraft) : b;
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repair]);
@@ -139,7 +156,9 @@ function RepairDetail({ repair }: { repair: Repair }) {
   const deviceName = `${repair.device.brand} ${repair.device.model}`.trim();
   const trackUrl = statusUrl(repair.id);
   const messages = {
-    hotovo: fillTemplate(settings.smsReadyTemplate, { zariadenie: deviceName, cislo: repair.number, cena: fmtMoney(remaining), firma: settings.name, odkaz: trackUrl }),
+    hotovo: claim
+      ? `Dobrý deň, Vaša reklamácia ${repair.number} (${deviceName}) je vybavená a zariadenie si môžete vyzdvihnúť.${remaining > 0 ? ` Doplatok: ${fmtMoney(remaining)}.` : ''} ${settings.name}`
+      : fillTemplate(settings.smsReadyTemplate, { zariadenie: deviceName, cislo: repair.number, cena: fmtMoney(remaining), firma: settings.name, odkaz: trackUrl }),
     schvalenie: `Dobrý deň, k zákazke ${repair.number} (${deviceName}): ${repair.diagnosis || 'diagnostika je hotová'}. Cena opravy: ${fmtMoney(amount)}. Súhlasíte s opravou? ${settings.name}`,
     odkaz: `Dobrý deň, stav opravy zariadenia ${deviceName} (zákazka ${repair.number}) môžete sledovať tu: ${trackUrl} ${settings.name}`,
     prazdna: '',
@@ -170,6 +189,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-bold tracking-tight tabular">{repair.number}</h1>
+              {claim && <Badge tone="red">Reklamácia{repair.claim?.originalNumber ? ` k ${repair.claim.originalNumber}` : ''}</Badge>}
               <RepairStatusBadge status={repair.status} />
               {(repair.priority === 'vysoka' || repair.priority === 'urgentna') && <Badge tone={priority(repair.priority).tone}>{priority(repair.priority).label} priorita</Badge>}
             </div>
@@ -180,7 +200,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" icon={<Printer className="size-4" />} onClick={() => print('protokol')}>
-            Protokol
+            {claim ? 'Reklamačný protokol' : 'Protokol'}
           </Button>
           <Button size="sm" icon={<Tag className="size-4" />} onClick={() => print('stitok')}>
             Štítok
@@ -208,7 +228,9 @@ function RepairDetail({ repair }: { repair: Repair }) {
       {params.get('nova') && repair.status !== 'oznamene' && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-500/30 dark:bg-emerald-500/10">
           <CheckCircle2 className="size-5 text-emerald-600" />
-          <span className="flex-1 font-medium">Zákazka {repair.number} je uložená. Vytlačte zákazníkovi preberací protokol a na zariadenie štítok.</span>
+          <span className="flex-1 font-medium">
+            {claim ? `Reklamácia ${repair.number} je prijatá. Vytlačte zákazníkovi reklamačný protokol a na zariadenie štítok.` : `Zákazka ${repair.number} je uložená. Vytlačte zákazníkovi preberací protokol a na zariadenie štítok.`}
+          </span>
           <Button size="sm" variant="primary" icon={<Printer className="size-4" />} onClick={() => print('protokol')}>
             Protokol
           </Button>
@@ -243,7 +265,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
 
       {/* Priebeh zákazky */}
       <div className="mb-5 flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
-        {REPAIR_STATUSES.filter((s) => s.id !== 'zrusene').map((s) => {
+        {REPAIR_STATUSES.filter((s) => s.id !== 'zrusene' && !(claim && s.id === 'oznamene')).map((s) => {
           const active = repair.status === s.id;
           return (
             <button
@@ -272,13 +294,14 @@ function RepairDetail({ repair }: { repair: Repair }) {
 
       <div className="grid gap-5 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
-          <RepairFormSections draft={draft} set={set} />
+          <RepairFormSections draft={draft} set={set} claim={claim} />
           <Card title="Fotky" icon={<Camera className="size-4" />}>
             <PhotoGallery photos={draft.photos} folder={`repairs/${repair.id}`} onChange={(photos) => run(() => updateRepair(repair, { photos }))} />
           </Card>
         </div>
 
         <div className="space-y-4">
+          {claim && <ClaimPanel repair={repair} />}
           <Card title="Platba">
             <dl className="space-y-2 text-sm">
               <Row label={draft.items.length ? 'Suma za opravu' : 'Predbežná cena'} value={fmtMoney(amount)} strong />
@@ -298,15 +321,24 @@ function RepairDetail({ repair }: { repair: Repair }) {
               )}
             </div>
             {!closed ? (
-              <Button variant="primary" className="mt-4 w-full" icon={<PackageCheck className="size-4" />} onClick={() => setHandover(true)}>
-                Vydať zákazníkovi
-              </Button>
+              <>
+                <Button
+                  variant="primary"
+                  className="mt-4 w-full"
+                  icon={<PackageCheck className="size-4" />}
+                  disabled={claim && !repair.claim?.resolution}
+                  onClick={() => setHandover(true)}
+                >
+                  Vydať zákazníkovi
+                </Button>
+                {claim && !repair.claim?.resolution && <p className="mt-2 text-center text-xs text-muted">Pred vydaním zvoľte výsledok reklamácie.</p>}
+              </>
             ) : (
               <Button className="mt-4 w-full" icon={<Printer className="size-4" />} onClick={() => print('vydajka')}>
-                Tlačiť výdajku
+                {claim ? 'Tlačiť doklad o vybavení' : 'Tlačiť výdajku'}
               </Button>
             )}
-            {warrantyEnd && (
+            {warrantyEnd && !claim && (
               <p className={cx('mt-3 flex items-center gap-2 rounded-xl px-3 py-2 text-sm', warrantyEnd >= new Date() ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-surface-2 text-muted')}>
                 <ShieldCheck className="size-4 shrink-0" />
                 {warrantyEnd >= new Date() ? `V záruke do ${fmtDate(warrantyEnd)}` : `Záruka skončila ${fmtDate(warrantyEnd)}`}
@@ -314,6 +346,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
             )}
           </Card>
 
+          {!claim && repair.status === 'vydane' && <LinkedClaims repair={repair} />}
           <Card title="Kontaktovať zákazníka">
             {repair.customer.phone ? (
               <div className="space-y-3">
@@ -529,7 +562,9 @@ function HandoverDialog({
             )}
           </>
         )}
-        <p className="text-xs text-muted">Po vydaní sa otvorí výdajka na tlač so zárukou {warrantyLabel(repair, defaultMonths)}.</p>
+        <p className="text-xs text-muted">
+          {repair.kind === 'reklamacia' ? 'Po vydaní sa otvorí doklad o vybavení reklamácie.' : `Po vydaní sa otvorí výdajka na tlač so zárukou ${warrantyLabel(repair, defaultMonths)}.`}
+        </p>
       </div>
     </Modal>
   );

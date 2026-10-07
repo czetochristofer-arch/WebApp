@@ -1,6 +1,7 @@
 import { addDays, addMonths } from 'date-fns';
 import type {
   BusinessSettings,
+  ClaimResolution,
   DeviceType,
   EventType,
   ItemKind,
@@ -41,6 +42,16 @@ export const REPAIR_STATUS_PUBLIC: Record<RepairStatus, { title: string; text: s
 };
 
 export const DEFAULT_WARRANTY_MONTHS = 12;
+
+/** Zákonná lehota na vybavenie reklamácie (dni od jej uplatnenia). */
+export const CLAIM_DAYS = 30;
+export const CLAIM_RESOLUTIONS: { id: ClaimResolution; label: string; short: string; tone: Tone }[] = [
+  { id: 'oprava', label: 'Uznaná – opravou', short: 'Oprava', tone: 'green' },
+  { id: 'vymena', label: 'Uznaná – výmenou', short: 'Výmena', tone: 'green' },
+  { id: 'vratenie', label: 'Uznaná – vrátením peňazí', short: 'Vrátenie peňazí', tone: 'cyan' },
+  { id: 'zamietnuta', label: 'Zamietnutá', short: 'Zamietnutá', tone: 'red' },
+];
+export const claimResolution = (id?: ClaimResolution | null) => CLAIM_RESOLUTIONS.find((c) => c.id === id) ?? null;
 /** Pôvodná predvolená záruka v dňoch – takto označené staršie zákazky preberajú novú predvolenú záruku. */
 const LEGACY_DEFAULT_WARRANTY_DAYS = 90;
 
@@ -156,6 +167,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   logoUrl: '',
   repairPrefix: 'Z',
   orderPrefix: 'O',
+  claimPrefix: 'R',
   defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
   protocolTerms: DEFAULT_TERMS,
   smsReadyTemplate: 'Dobrý deň, Vaše zariadenie {zariadenie} (zákazka {cislo}) je pripravené na vyzdvihnutie. Cena: {cena}. {firma}',

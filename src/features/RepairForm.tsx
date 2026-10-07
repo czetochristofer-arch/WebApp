@@ -44,7 +44,7 @@ function Section({ title, icon, children }: { title: string; icon: ReactNode; ch
   );
 }
 
-export function RepairFormSections({ draft, set, compact }: { draft: RepairDraft; set: Setter; compact?: boolean }) {
+export function RepairFormSections({ draft, set, compact, claim }: { draft: RepairDraft; set: Setter; compact?: boolean; claim?: boolean }) {
   const dev = draft.device;
   const setDev = (patch: Partial<RepairDraft['device']>) => set('device', { ...dev, ...patch });
   const dueDate = toDate(draft.dueAt);
@@ -85,9 +85,9 @@ export function RepairFormSections({ draft, set, compact }: { draft: RepairDraft
         </div>
       </Section>
 
-      <Section title="Porucha a oprava" icon={<Wrench className="size-4" />}>
+      <Section title={claim ? 'Reklamovaná vada a vybavenie' : 'Porucha a oprava'} icon={<Wrench className="size-4" />}>
         <div className="space-y-3">
-          <Textarea label="Popis poruchy (od zákazníka)" value={draft.problem} onChange={(e) => set('problem', e.target.value)} rows={2} placeholder="Čo nefunguje?" />
+          <Textarea label={claim ? 'Reklamovaná vada (popis zákazníka)' : 'Popis poruchy (od zákazníka)'} value={draft.problem} onChange={(e) => set('problem', e.target.value)} rows={2} placeholder="Čo nefunguje?" />
           <div className="flex flex-wrap gap-1.5">
             {COMMON_PROBLEMS.map((p) => (
               <button

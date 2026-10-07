@@ -81,7 +81,7 @@ export function totals(items: LineItem[]) {
 
 export const newItemId = () => Math.random().toString(36).slice(2, 10);
 
-export async function nextNumber(kind: 'repairs' | 'orders', prefix: string) {
+export async function nextNumber(kind: 'repairs' | 'orders' | 'claims', prefix: string) {
   const ref = db().doc(`counters/${kind}`);
   const seq = await db().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
@@ -98,6 +98,7 @@ export async function getSettings(): Promise<DocumentData> {
     name: 'ChrisStop',
     repairPrefix: 'Z',
     orderPrefix: 'O',
+    claimPrefix: 'R',
     defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
     vatPayer: false,
     ...(snap.exists ? snap.data() : {}),

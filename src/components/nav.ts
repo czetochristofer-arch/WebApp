@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Package,
   Settings,
+  ShieldAlert,
   Sparkles,
   Tags,
   Users,
@@ -21,6 +22,7 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { to: '/', label: 'Prehľad', icon: LayoutDashboard, end: true },
   { to: '/zakazky', label: 'Zákazky', icon: Wrench },
+  { to: '/reklamacie', label: 'Reklamácie', icon: ShieldAlert },
   { to: '/objednavky', label: 'Objednávky', icon: Package },
   { to: '/kalendar', label: 'Kalendár', icon: CalendarDays },
   { to: '/zakaznici', label: 'Zákazníci', icon: Users },

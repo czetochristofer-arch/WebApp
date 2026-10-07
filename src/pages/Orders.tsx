@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { doc, Timestamp } from 'firebase/firestore';
 import { endOfDay } from 'date-fns';
-import { Package, PackageCheck, Plus, Search, Trash2, Truck } from 'lucide-react';
+import { Package, PackageCheck, Plus, Search, ShieldAlert, Trash2, Truck, Wrench } from 'lucide-react';
+import { PartsBoard } from '@/features/PartsBoard';
 import { db } from '@/lib/firebase';
 import { useLiveDoc } from '@/lib/hooks';
 import { useAuth } from '@/features/auth';
 import { useData } from '@/features/data';
-import { isOrderOpen } from '@/features/metrics';
+import { isOrderOpen, isRepairOpen, partNeedsOrder } from '@/features/metrics';
 import { Badge, Button, EmptyState, Input, Modal, PageHeader, Segmented, Textarea, cx } from '@/components/ui';
 import { ContactButtons, CustomerPicker, ItemsEditor, OrderStatusBadge, fillTemplate } from '@/components/domain';
 import { useFeedback } from '@/components/feedback';
@@ -19,14 +20,34 @@ import type { Order, OrderStatus, PaymentMethod } from '@/lib/types';
 
 type Filter = 'aktivne' | OrderStatus | 'vsetky';
 
+type Tab = 'diely' | 'tovar';
+
 export function OrdersPage() {
-  const { orders } = useData();
+  const { orders, repairs } = useData();
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const [filter, setFilter] = useState<Filter>('aktivne');
   const [q, setQ] = useState('');
   const creating = params.get('nova') === '1';
+  const [tabPref, setTabPref] = useState<Tab>(() => {
+    try {
+      return (localStorage.getItem('cs-orders-tab') as Tab) || 'diely';
+    } catch {
+      return 'diely';
+    }
+  });
+  const tab: Tab = (params.get('typ') as Tab) || (creating || id ? 'tovar' : tabPref);
+  const setTab = (t: Tab) => {
+    setTabPref(t);
+    try {
+      localStorage.setItem('cs-orders-tab', t);
+    } catch {
+      // nič
+    }
+    if (params.get('typ')) setParams({}, { replace: true });
+  };
+  const partsToOrder = useMemo(() => repairs.filter(isRepairOpen).reduce((n, r) => n + (r.items ?? []).filter(partNeedsOrder).length, 0), [repairs]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { aktivne: 0 };
@@ -55,42 +76,93 @@ export function OrdersPage() {
     <div>
       <PageHeader
         title="Objednávky"
-        subtitle="Malé objednávky tovaru a príslušenstva pre zákazníkov"
+        subtitle={tab === 'diely' ? 'Náhradné diely do rozpracovaných zákaziek' : 'Tovar a príslušenstvo pre zákazníkov – kryty, sklá, nabíjačky…'}
         actions={
           <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setParams({ nova: '1' })}>
             Nová objednávka
           </Button>
         }
       />
-      <div className="mb-4 flex flex-col gap-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-subtle" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Hľadať podľa položky, zákazníka, dodávateľa…" className="pl-9" />
-        </div>
-        {!q && (
-          <Segmented
-            value={filter}
-            onChange={setFilter}
-            options={[
-              { id: 'aktivne', label: 'Aktívne', count: counts.aktivne },
-              ...ORDER_STATUSES.filter((s) => s.open).map((s) => ({ id: s.id as Filter, label: s.label.split(' –')[0], count: counts[s.id] ?? 0 })),
-              { id: 'vydana', label: 'Vydané' },
-              { id: 'vsetky', label: 'Všetky' },
-            ]}
-          />
-        )}
+      <div className="mb-5 grid grid-cols-2 gap-2 sm:max-w-xl">
+        {(
+          [
+            {
+              id: 'diely',
+              icon: <Wrench className="size-5" />,
+              title: 'Objednávky dielov',
+              sub: partsToOrder ? `${partsToOrder} treba objednať` : 'všetko objednané',
+              alert: partsToOrder > 0,
+            },
+            { id: 'tovar', icon: <Package className="size-5" />, title: 'Objednávky iné', sub: `${counts.aktivne} aktívnych · kryty, sklá…`, alert: false },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cx(
+              'flex items-center gap-3 rounded-2xl border p-3 text-left transition-colors',
+              tab === t.id ? 'border-primary bg-primary-soft' : 'border-line bg-surface hover:border-primary/40',
+            )}
+          >
+            <span
+              className={cx(
+                'flex size-10 shrink-0 items-center justify-center rounded-xl',
+                tab === t.id ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {t.icon}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-bold">{t.title}</span>
+              <span className={cx('block truncate text-xs', t.alert ? 'font-semibold text-red-600 dark:text-red-400' : 'text-muted')}>{t.sub}</span>
+            </span>
+          </button>
+        ))}
       </div>
-
-      {list.length === 0 ? (
-        <div className="rounded-2xl border border-line bg-surface">
-          <EmptyState icon={<Package />} title="Žiadne objednávky" text="Puzdrá, ochranné sklá, nabíjačky a iný tovar na objednávku." action={<Button variant="primary" onClick={() => setParams({ nova: '1' })}>Nová objednávka</Button>} />
-        </div>
+      {tab === 'diely' ? (
+        <PartsBoard />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {list.map((o) => (
-            <OrderCard key={o.id} o={o} onOpen={() => navigate(`/objednavky/${o.id}`)} />
-          ))}
-        </div>
+        <>
+          <div className="mb-4 flex flex-col gap-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-subtle" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Hľadať podľa položky, zákazníka, dodávateľa…" className="pl-9" />
+            </div>
+            {!q && (
+              <Segmented
+                value={filter}
+                onChange={setFilter}
+                options={[
+                  { id: 'aktivne', label: 'Aktívne', count: counts.aktivne },
+                  ...ORDER_STATUSES.filter((s) => s.open).map((s) => ({ id: s.id as Filter, label: s.label.split(' –')[0], count: counts[s.id] ?? 0 })),
+                  { id: 'vydana', label: 'Vydané' },
+                  { id: 'vsetky', label: 'Všetky' },
+                ]}
+              />
+            )}
+          </div>
+
+          {list.length === 0 ? (
+            <div className="rounded-2xl border border-line bg-surface">
+              <EmptyState
+                icon={<Package />}
+                title="Žiadne objednávky"
+                text="Puzdrá, ochranné sklá, nabíjačky a iný tovar na objednávku."
+                action={
+                  <Button variant="primary" onClick={() => setParams({ nova: '1' })}>
+                    Nová objednávka
+                  </Button>
+                }
+              />
+            </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {list.map((o) => (
+                <OrderCard key={o.id} o={o} onOpen={() => navigate(`/objednavky/${o.id}`)} />
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {(creating || id) && <OrderDialog id={creating ? null : id!} onClose={close} />}
@@ -126,7 +198,11 @@ function OrderCard({ o, onOpen }: { o: Order; onOpen: () => void }) {
       <div className="mt-3 flex items-center justify-between gap-2 border-t border-line pt-3">
         <span className="text-sm">
           <b className="tabular">{fmtMoney(o.total)}</b>
-          {o.paid ? <span className="ml-2 text-xs text-emerald-600">zaplatené</span> : o.deposit ? <span className="ml-2 text-xs text-muted">záloha {fmtMoney(o.deposit)}</span> : null}
+          {o.paid ? (
+            <span className="ml-2 text-xs text-emerald-600">zaplatené</span>
+          ) : o.deposit ? (
+            <span className="ml-2 text-xs text-muted">záloha {fmtMoney(o.deposit)}</span>
+          ) : null}
         </span>
         {step && (
           <Button size="sm" variant="soft" icon={step.icon} onClick={() => run(() => setOrderStatus(o, step.status), `Označené: ${step.label}`)}>
@@ -164,6 +240,7 @@ function emptyOrder(): OrderInput {
 function OrderDialog({ id, onClose }: { id: string | null; onClose: () => void }) {
   const { orders, settings } = useData();
   const { isOwner } = useAuth();
+  const navigate = useNavigate();
   const { run, confirm, toast } = useFeedback();
   const cached = id ? orders.find((o) => o.id === id) : undefined;
   const live = useLiveDoc<Order>(id && !cached ? doc(db, 'orders', id) : null, id && !cached ? id : 'none');
@@ -174,7 +251,20 @@ function OrderDialog({ id, onClose }: { id: string | null; onClose: () => void }
 
   useEffect(() => {
     if (order) {
-      const { id: _id, number: _n, seq: _s, keywords: _k, total: _t, totalCost: _c, createdAt: _ca, updatedAt: _u, history: _h, closedAt: _cl, createdBy: _cb, ...rest } = order;
+      const {
+        id: _id,
+        number: _n,
+        seq: _s,
+        keywords: _k,
+        total: _t,
+        totalCost: _c,
+        createdAt: _ca,
+        updatedAt: _u,
+        history: _h,
+        closedAt: _cl,
+        createdBy: _cb,
+        ...rest
+      } = order;
       setDraft({ ...emptyOrder(), ...rest });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,7 +349,10 @@ function OrderDialog({ id, onClose }: { id: string | null; onClose: () => void }
                     <button
                       key={p.id}
                       onClick={() => setPayMethod(p.id)}
-                      className={cx('rounded-lg border px-2.5 py-1 text-xs font-medium', payMethod === p.id ? 'border-primary bg-primary-soft text-primary' : 'border-line bg-surface')}
+                      className={cx(
+                        'rounded-lg border px-2.5 py-1 text-xs font-medium',
+                        payMethod === p.id ? 'border-primary bg-primary-soft text-primary' : 'border-line bg-surface',
+                      )}
                     >
                       {p.label}
                     </button>
@@ -292,7 +385,14 @@ function OrderDialog({ id, onClose }: { id: string | null; onClose: () => void }
           <Input label="Záloha" inputMode="decimal" suffix="€" value={draft.deposit || ''} onChange={(e) => set('deposit', parseNum(e.target.value))} />
         </div>
         <Textarea label="Poznámka" value={draft.notes ?? ''} onChange={(e) => set('notes', e.target.value)} rows={2} />
-        {order?.paid && <Badge tone="green">Zaplatené{order.paymentMethod ? ` – ${PAYMENT_METHODS.find((p) => p.id === order.paymentMethod)?.label}` : ''}</Badge>}
+        {order?.status === 'vydana' && (
+          <Button size="sm" icon={<ShieldAlert className="size-4" />} onClick={() => navigate(`/reklamacie/nova?objednavka=${order.id}`)}>
+            Prijať reklamáciu tohto tovaru
+          </Button>
+        )}
+        {order?.paid && (
+          <Badge tone="green">Zaplatené{order.paymentMethod ? ` – ${PAYMENT_METHODS.find((p) => p.id === order.paymentMethod)?.label}` : ''}</Badge>
+        )}
         {order && order.history?.length > 0 && (
           <div>
             <p className="mb-2 text-sm font-semibold">História</p>

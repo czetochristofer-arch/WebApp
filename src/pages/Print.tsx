@@ -6,8 +6,8 @@ import { Printer, X } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import { useLiveDoc } from '@/lib/hooks';
 import { useData } from '@/features/data';
-import { receivedAt, repairAmount } from '@/features/metrics';
-import { DEVICE_TYPES, paymentLabel, warrantyLabel, warrantyUntil } from '@/lib/constants';
+import { claimDeadline, receivedAt, repairAmount } from '@/features/metrics';
+import { CLAIM_DAYS, DEVICE_TYPES, claimResolution, paymentLabel, warrantyLabel, warrantyUntil } from '@/lib/constants';
 import { repairQrUrl } from '@/lib/links';
 import { fmtDate, fmtDateTime, fmtMoney, fmtPhone, toDate } from '@/lib/format';
 import type { BusinessSettings, Repair } from '@/lib/types';
@@ -53,7 +53,17 @@ export default function PrintPage() {
         <Label repair={repair} />
       ) : (
         <div className="mx-auto my-6 max-w-[210mm] bg-white p-[12mm] shadow print:m-0 print:max-w-none print:p-0 print:shadow-none">
-          {kind === 'vydajka' ? <Handover repair={repair} s={settings} /> : <Intake repair={repair} s={settings} />}
+          {repair.kind === 'reklamacia' ? (
+            kind === 'vydajka' ? (
+              <ClaimHandover repair={repair} s={settings} />
+            ) : (
+              <ClaimIntake repair={repair} s={settings} />
+            )
+          ) : kind === 'vydajka' ? (
+            <Handover repair={repair} s={settings} />
+          ) : (
+            <Intake repair={repair} s={settings} />
+          )}
         </div>
       )}
     </div>
@@ -255,6 +265,148 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
         </p>
       </div>
       <Signatures left="Vydal za servis" right="Zariadenie prevzal zákazník" />
+    </div>
+  );
+}
+
+const CLAIM_SOURCE = { oprava: 'oprava vykonaná v našom servise', nakup: 'tovar zakúpený v našej prevádzke', iny: 'oprava / tovar podľa dokladu' } as const;
+
+function ClaimOrigin({ r }: { r: Repair }) {
+  const c = r.claim;
+  if (!c) return null;
+  return (
+    <Block title="Reklamuje sa">
+      <p>
+        <b>{CLAIM_SOURCE[c.source]}</b>
+        {c.originalNumber ? ` – doklad / zákazka č. ${c.originalNumber}` : ''}
+        {c.originalDate ? `, zo dňa ${fmtDate(c.originalDate)}` : ''}
+      </p>
+      {c.warrantyUntil && (
+        <p>
+          Záruka do: <b>{fmtDate(c.warrantyUntil)}</b>
+          {c.inWarranty === false ? ' (reklamácia uplatnená po uplynutí záručnej doby)' : ''}
+        </p>
+      )}
+      {c.resolutionNote && c.source === 'iny' && !c.resolution && <p>{c.resolutionNote}</p>}
+    </Block>
+  );
+}
+
+function ClaimIntake({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
+  const requested = claimResolution(r.claim?.requested);
+  return (
+    <div>
+      <Header s={s} title="Reklamačný protokol" number={r.number} date={`Uplatnené ${fmtDateTime(receivedAt(r))}`} />
+      <div className="grid grid-cols-[1fr_1fr_auto] gap-6">
+        <Block title="Zákazník (spotrebiteľ)">
+          <p className="font-bold">{r.customer.name}</p>
+          {r.customer.phone && <p>{fmtPhone(r.customer.phone)}</p>}
+          {r.customer.email && <p>{r.customer.email}</p>}
+        </Block>
+        <Block title="Reklamované zariadenie / tovar">
+          <p className="font-bold">{deviceLine(r)}</p>
+          <KV k="IMEI / SN" v={r.device.imei} />
+          <KV k="Príslušenstvo" v={r.device.accessories || 'bez príslušenstva'} />
+        </Block>
+        <div className="mt-4 flex flex-col items-center gap-1">
+          <Qr text={repairQrUrl(r.id)} size={80} />
+          <p className="w-24 text-center text-[8.5px] leading-tight text-stone-500">Stav reklamácie online – naskenujte mobilom</p>
+        </div>
+      </div>
+      <ClaimOrigin r={r} />
+      <Block title="Popis reklamovanej vady">
+        <p>{r.problem}</p>
+      </Block>
+      {r.device.condition && (
+        <Block title="Stav zariadenia pri prevzatí">
+          <p>{r.device.condition}</p>
+        </Block>
+      )}
+      {r.notes && (
+        <Block title="Poznámka">
+          <p className="whitespace-pre-wrap">{r.notes}</p>
+        </Block>
+      )}
+      <div className="mt-4 grid grid-cols-2 gap-3 rounded-lg border border-stone-300 p-3 text-[12px]">
+        <div>
+          <p className="text-stone-500">Požadovaný spôsob vybavenia</p>
+          <p className="text-base font-bold">{requested ? requested.short : 'podľa posúdenia'}</p>
+        </div>
+        <div>
+          <p className="text-stone-500">Lehota na vybavenie</p>
+          <p className="text-base font-bold">do {fmtDate(claimDeadline(r))}</p>
+        </div>
+      </div>
+      <Block title="Poučenie">
+        <ol className="list-decimal space-y-0.5 pl-4 text-[10.5px] text-stone-700">
+          <li>Reklamácia bude vybavená bez zbytočného odkladu, najneskôr do {CLAIM_DAYS} dní odo dňa jej uplatnenia. O spôsobe vybavenia budete informovaný.</li>
+          <li>Záruka sa nevzťahuje na vady spôsobené mechanickým poškodením, pôsobením tekutín, neodborným zásahom alebo bežným opotrebením.</li>
+          <li>Ak sa reklamácia ukáže ako neoprávnená, servis zákazníka informuje; prípadnú platenú opravu vykoná len s jeho súhlasom.</li>
+          <li>Servis nezodpovedá za dáta v zariadení. Odporúčame ich pred odovzdaním zálohovať.</li>
+          <li>Pri vyzdvihnutí predložte tento protokol alebo uveďte číslo reklamácie {r.number}.</li>
+        </ol>
+      </Block>
+      <Signatures left="Reklamáciu prijal za servis" right="Reklamáciu uplatnil zákazník" />
+    </div>
+  );
+}
+
+function ClaimHandover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
+  const closed = toDate(r.closedAt) ?? new Date();
+  const res = claimResolution(r.claim?.resolution);
+  const amount = repairAmount(r);
+  return (
+    <div>
+      <Header s={s} title="Doklad o vybavení reklamácie" number={r.number} date={`Vybavené ${fmtDateTime(closed)}`} />
+      <div className="grid grid-cols-2 gap-6">
+        <Block title="Zákazník (spotrebiteľ)">
+          <p className="font-bold">{r.customer.name}</p>
+          {r.customer.phone && <p>{fmtPhone(r.customer.phone)}</p>}
+        </Block>
+        <Block title="Zariadenie / tovar">
+          <p className="font-bold">{deviceLine(r)}</p>
+          <KV k="IMEI / SN" v={r.device.imei} />
+          <KV k="Reklamácia uplatnená" v={fmtDate(receivedAt(r))} />
+        </Block>
+      </div>
+      <ClaimOrigin r={r} />
+      <Block title="Reklamovaná vada">
+        <p>{r.problem}</p>
+      </Block>
+      {r.diagnosis && (
+        <Block title="Zistenie servisu">
+          <p className="whitespace-pre-wrap">{r.diagnosis}</p>
+        </Block>
+      )}
+      <div className="mt-5 rounded-lg border-2 border-black p-3 text-[12px]">
+        <p className="text-[10px] font-bold tracking-wider text-stone-500 uppercase">Spôsob vybavenia reklamácie</p>
+        <p className="mt-1 text-base font-bold">{res ? res.label : '—'}</p>
+        {r.claim?.resolutionNote && <p className="mt-1 whitespace-pre-wrap">{r.claim.resolutionNote}</p>}
+      </div>
+      {r.items.length > 0 && (
+        <Block title="Vykonané práce a použitý materiál">
+          <table className="w-full text-[12px]">
+            <tbody>
+              {r.items.map((i) => (
+                <tr key={i.id} className="border-b border-stone-200">
+                  <td className="py-1">{i.name}</td>
+                  <td className="py-1 text-right tabular">{i.qty} ks</td>
+                  <td className="py-1 text-right tabular">{i.price ? fmtMoney(i.qty * i.price) : 'v rámci reklamácie'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Block>
+      )}
+      {amount > 0 && (
+        <div className="mt-4 ml-auto w-72 space-y-1 text-[12px]">
+          <p className="flex justify-between border-t border-black pt-1 text-sm">
+            <span className="font-bold">{r.paid ? 'Uhradené' : 'Na úhradu'}</span> <b className="tabular">{fmtMoney(Math.max(0, amount - r.deposit))}</b>
+          </p>
+          {r.paid && <p className="text-right text-stone-500">Spôsob platby: {paymentLabel(r.paymentMethod)}</p>}
+        </div>
+      )}
+      <Signatures left="Vybavil za servis" right="Prevzal zákazník" />
     </div>
   );
 }
