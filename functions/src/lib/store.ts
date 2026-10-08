@@ -100,6 +100,7 @@ export async function getSettings(): Promise<DocumentData> {
     orderPrefix: 'O',
     claimPrefix: 'R',
     phonePrefix: 'V',
+    phoneStockPrefix: 'S',
     defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
     vatPayer: false,
     ...(snap.exists ? snap.data() : {}),

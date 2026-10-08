@@ -94,10 +94,10 @@ function DocumentsSection() {
   const { isOwner } = useAuth();
   const { draft, set, dirty, reset } = useSettingsDraft();
   const { run } = useFeedback();
-  const [counters, setCounters] = useState<{ repairs: number; orders: number; claims: number; phones: number } | null>(null);
+  const [counters, setCounters] = useState<{ repairs: number; orders: number; claims: number; phones: number; phoneStock: number } | null>(null);
   useEffect(() => {
-    Promise.all([getCounter('repairs'), getCounter('orders'), getCounter('claims'), getCounter('phones')])
-      .then(([repairs, orders, claims, phones]) => setCounters({ repairs, orders, claims, phones }))
+    Promise.all([getCounter('repairs'), getCounter('orders'), getCounter('claims'), getCounter('phones'), getCounter('phoneStock')])
+      .then(([repairs, orders, claims, phones, phoneStock]) => setCounters({ repairs, orders, claims, phones, phoneStock }))
       .catch(() => undefined);
   }, []);
   const hours = Array.from({ length: 24 }, (_, i) => i);
@@ -109,6 +109,7 @@ function DocumentsSection() {
           <Input label="Prefix objednávok" value={draft.orderPrefix} onChange={(e) => set('orderPrefix', e.target.value.toUpperCase())} />
           <Input label="Prefix reklamácií" value={draft.claimPrefix ?? 'R'} onChange={(e) => set('claimPrefix', e.target.value.toUpperCase())} />
           <Input label="Prefix výkupov" value={draft.phonePrefix ?? 'V'} onChange={(e) => set('phonePrefix', e.target.value.toUpperCase())} />
+          <Input label="Prefix vlastných zariadení" value={draft.phoneStockPrefix ?? 'S'} onChange={(e) => set('phoneStockPrefix', e.target.value.toUpperCase())} hint="Pridané na sklad bez výkupu" />
           <Input
             label="Záruka na predané telefóny"
             suffix="mes."
@@ -140,6 +141,7 @@ function DocumentsSection() {
             <CounterInput label="Ďalšie číslo objednávky" kind="orders" value={counters.orders} prefix={draft.orderPrefix} />
             <CounterInput label="Ďalšie číslo reklamácie" kind="claims" value={counters.claims} prefix={draft.claimPrefix ?? 'R'} />
             <CounterInput label="Ďalšie číslo výkupu" kind="phones" value={counters.phones} prefix={draft.phonePrefix ?? 'V'} />
+            <CounterInput label="Ďalšie číslo vlastného zariadenia" kind="phoneStock" value={counters.phoneStock} prefix={draft.phoneStockPrefix ?? 'S'} />
           </div>
         )}
         <Textarea label="Podmienky servisu (tlačia sa na preberací protokol)" value={draft.protocolTerms} onChange={(e) => set('protocolTerms', e.target.value)} rows={6} />

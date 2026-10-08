@@ -275,6 +275,7 @@ function phoneBrief(snap: DocumentSnapshot) {
     stav_popis: PHONE_LABEL[p.status] ?? p.status,
     trieda: p.grade,
     bateria: p.device?.batteryHealth ?? undefined,
+    povod: p.origin === 'sklad' ? 'vlastné zariadenie pridané bez výkupu' : 'výkup od zákazníka',
     vykupna_cena: p.purchasePrice,
     naklady_repas: round2(cost - (p.purchasePrice || 0)),
     naklady_spolu: cost,

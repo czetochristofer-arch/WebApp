@@ -12,6 +12,7 @@ import {
   FileText,
   History,
   Megaphone,
+  PackageCheck,
   PackageX,
   Plus,
   Printer,
@@ -44,6 +45,7 @@ import {
   daysInStock,
   deletePhone,
   isPhoneOpen,
+  isStockPhone,
   mutatePhone,
   phoneName,
   phoneProfit,
@@ -57,7 +59,7 @@ import {
 } from '@/lib/phones';
 import type { CustomerRef, PaymentMethod, Phone, PhoneStatus } from '@/lib/types';
 
-const DRAFT_KEYS = ['device', 'grade', 'checks', 'defects', 'seller', 'purchasePrice', 'purchasePayment', 'targetPrice', 'minPrice', 'location', 'notes'] as const;
+const DRAFT_KEYS = ['device', 'grade', 'checks', 'defects', 'seller', 'purchasePrice', 'purchasePayment', 'targetPrice', 'minPrice', 'location', 'notes', 'originNote'] as const;
 type Draft = Pick<PhoneInput, (typeof DRAFT_KEYS)[number]>;
 const toDraft = (p: Phone): Draft => ({
   device: { ...p.device },
@@ -71,6 +73,7 @@ const toDraft = (p: Phone): Draft => ({
   minPrice: p.minPrice ?? null,
   location: p.location ?? '',
   notes: p.notes ?? '',
+  originNote: p.originNote ?? '',
 });
 const sig = (d: Draft) => JSON.stringify(DRAFT_KEYS.map((k) => d[k]));
 
@@ -133,6 +136,8 @@ function PhoneDetail({ phone }: { phone: Phone }) {
   const price = phone.sale?.price ?? draft.targetPrice;
   const print = (kind: string) => window.open(`/tlac/telefon/${kind}/${phone.id}`, '_blank');
   const warrantyMonths = settings.phoneWarrantyMonths ?? 12;
+  // Vlastné zariadenie pridané bez výkupu – nemá predávajúceho ani výkupný doklad.
+  const stock = isStockPhone(phone);
 
   const changeStatus = async (status: PhoneStatus) => {
     if (status === 'predane') return setSelling(true);
@@ -147,7 +152,7 @@ function PhoneDetail({ phone }: { phone: Phone }) {
   };
 
   const remove = async () => {
-    if (await confirm({ title: `Vymazať ${phone.number}?`, message: 'Záznam o výkupe aj fotky sa natrvalo odstránia. Výkupný doklad v účtovníctve tým nezanikne.', confirmLabel: 'Vymazať', danger: true })) {
+    if (await confirm({ title: `Vymazať ${phone.number}?`, message: stock ? 'Záznam o zariadení aj fotky sa natrvalo odstránia.' : 'Záznam o výkupe aj fotky sa natrvalo odstránia. Výkupný doklad v účtovníctve tým nezanikne.', confirmLabel: 'Vymazať', danger: true })) {
       await run(() => deletePhone(phone), 'Vymazané');
       navigate('/telefony', { replace: true });
     }
@@ -169,16 +174,18 @@ function PhoneDetail({ phone }: { phone: Phone }) {
               </Badge>
             </div>
             <p className="mt-0.5 text-sm text-muted">
-              <span className="font-semibold text-primary tabular">{phone.number}</span> · vykúpené {fmtDate(phone.purchasedAt)} · {daysInStock(phone)} dní {open ? 'na sklade' : 'do predaja'}
+              <span className="font-semibold text-primary tabular">{phone.number}</span> · {stock ? 'vlastné, na sklade od' : 'vykúpené'} {fmtDate(phone.purchasedAt)} · {daysInStock(phone)} dní {open ? 'na sklade' : 'do predaja'}
               {phone.status === 'rezervovane' && phone.reservedFor ? ` · rezervované: ${phone.reservedFor}` : ''}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" icon={<FileText className="size-4" />} onClick={() => print('vykup')}>
-            Výkupný doklad
-          </Button>
-          {phone.purchasePayment === 'hotovost' && (
+          {!stock && (
+            <Button size="sm" icon={<FileText className="size-4" />} onClick={() => print('vykup')}>
+              Výkupný doklad
+            </Button>
+          )}
+          {!stock && phone.purchasePayment === 'hotovost' && (
             <Button size="sm" icon={<Receipt className="size-4" />} onClick={() => print('vpd')}>
               VPD
             </Button>
@@ -197,7 +204,20 @@ function PhoneDetail({ phone }: { phone: Phone }) {
         </div>
       </div>
 
-      {params.get('novy') && (
+      {params.get('novy') && stock && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-500/30 dark:bg-emerald-500/10">
+          <CheckCircle2 className="size-5 text-emerald-600" />
+          <span className="min-w-48 flex-1 font-medium">Zariadenie {phone.number} je pridané na sklad. Doplňte repas a cieľovú cenu, potom môžete vytlačiť cenovku.</span>
+          <Button size="sm" icon={<Tag className="size-4" />} onClick={() => print('cenovka')}>
+            Cenovka
+          </Button>
+          <IconButton label="Zavrieť" size="sm" onClick={() => setParams({}, { replace: true })}>
+            <X className="size-4" />
+          </IconButton>
+        </div>
+      )}
+
+      {params.get('novy') && !stock && (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-500/30 dark:bg-emerald-500/10">
           <CheckCircle2 className="size-5 text-emerald-600" />
           <span className="min-w-48 flex-1 font-medium">
@@ -265,24 +285,31 @@ function PhoneDetail({ phone }: { phone: Phone }) {
           <Card title="Fotky" icon={<Camera className="size-4" />}>
             <PhotoGallery photos={phone.photos ?? []} folder={`phones/${phone.id}`} onChange={(photos) => run(() => updatePhone(phone, { photos }))} />
           </Card>
-          <Card
-            title="Predávajúci"
-            icon={<UserRound className="size-4" />}
-            actions={
-              <Button size="sm" variant="ghost" onClick={() => setShowSeller((s) => !s)}>
-                {showSeller ? 'Skryť údaje' : 'Zobraziť / upraviť'}
-              </Button>
-            }
-          >
-            {showSeller ? (
-              <SellerFields value={draft.seller} onChange={(v) => set('seller', v)} />
-            ) : (
-              <p className="text-sm">
-                <b>{phone.seller.name}</b>
-                <span className="text-muted"> · osobné údaje sú skryté</span>
-              </p>
-            )}
-          </Card>
+          {stock ? (
+            <Card title="Pôvod zariadenia" icon={<PackageCheck className="size-4" />}>
+              <Input label="Odkiaľ zariadenie máte" value={draft.originNote ?? ''} onChange={(e) => set('originNote', e.target.value)} placeholder="napr. vykúpené pred zavedením aplikácie, od dodávateľa…" />
+              <p className="mt-2 text-xs text-muted">Pridané na sklad bez výkupného formulára – nemá predávajúceho ani výkupný doklad.</p>
+            </Card>
+          ) : (
+            <Card
+              title="Predávajúci"
+              icon={<UserRound className="size-4" />}
+              actions={
+                <Button size="sm" variant="ghost" onClick={() => setShowSeller((s) => !s)}>
+                  {showSeller ? 'Skryť údaje' : 'Zobraziť / upraviť'}
+                </Button>
+              }
+            >
+              {showSeller ? (
+                <SellerFields value={draft.seller} onChange={(v) => set('seller', v)} />
+              ) : (
+                <p className="text-sm">
+                  <b>{phone.seller.name}</b>
+                  <span className="text-muted"> · osobné údaje sú skryté</span>
+                </p>
+              )}
+            </Card>
+          )}
           <Card title="Poznámka" icon={<FileText className="size-4" />}>
             <Textarea rows={2} value={draft.notes ?? ''} onChange={(e) => set('notes', e.target.value)} placeholder="Interná poznámka…" />
           </Card>
@@ -291,11 +318,22 @@ function PhoneDetail({ phone }: { phone: Phone }) {
         <div className="space-y-4">
           <Card title="Ekonomika" icon={<Euro className="size-4" />}>
             <dl className="space-y-2 text-sm">
-              <Row label={`Výkup (${draft.purchasePayment === 'hotovost' ? 'hotovosť' : 'prevod'})`} value={fmtMoney(draft.purchasePrice)} />
+              <Row label={stock ? 'Nákupná cena' : `Výkup (${draft.purchasePayment === 'hotovost' ? 'hotovosť' : 'prevod'})`} value={fmtMoney(draft.purchasePrice)} />
               <Row label="Náklady na repas" value={fmtMoney(repairCosts(phone))} />
               <Row label="Náklady spolu" value={fmtMoney(cost)} strong />
               {phone.sale && <Row label="Predané za" value={fmtMoney(phone.sale.price)} strong />}
             </dl>
+            {stock && (
+              <Input
+                wrapClass="mt-3"
+                label="Nákupná cena"
+                hint="Za koľko ste zariadenie získali – pre výpočet zisku"
+                inputMode="decimal"
+                suffix="€"
+                value={draft.purchasePrice || ''}
+                onChange={(e) => set('purchasePrice', e.target.value === '' ? 0 : parseNum(e.target.value))}
+              />
+            )}
             {!phone.sale && (
               <div className="mt-3 grid grid-cols-2 gap-2">
                 <Input label="Cieľová cena" inputMode="decimal" suffix="€" value={draft.targetPrice ?? ''} onChange={(e) => set('targetPrice', e.target.value === '' ? null : parseNum(e.target.value))} />

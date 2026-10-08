@@ -81,7 +81,7 @@ export function totals(items: LineItem[]) {
 }
 
 /** Pridelí ďalšie poradové číslo (transakcia – bez duplicít ani pri súbežnom zápise). */
-export type CounterKind = 'repairs' | 'orders' | 'claims' | 'phones';
+export type CounterKind = 'repairs' | 'orders' | 'claims' | 'phones' | 'phoneStock';
 
 export async function nextNumber(kind: CounterKind, prefix: string) {
   const counterRef = doc(db, 'counters', kind);

@@ -56,14 +56,24 @@ export async function findPhonesByIdentifier(identifier: string) {
     .slice(0, 5);
 }
 
+export const isStockPhone = (p: Pick<Phone, 'origin'>) => p.origin === 'sklad';
+
 export async function createPhone(input: PhoneInput, prefix: string, id: string) {
-  const { seq, number } = await nextNumber('phones', prefix);
+  // Vlastné zariadenia majú samostatný rad, aby čísla výkupných dokladov (V-…) išli bez medzier.
+  const stock = input.origin === 'sklad';
+  const { seq, number } = await nextNumber(stock ? 'phoneStock' : 'phones', prefix);
   const data = clean({
     ...input,
     number,
     seq,
     keywords: phoneKeywords({ ...input, number }),
-    history: [history(`Výkup za ${input.purchasePrice} € (${phoneGrade(input.grade).label})`)],
+    history: [
+      history(
+        stock
+          ? `Pridané na sklad bez výkupu${input.purchasePrice ? ` (nákupná cena ${input.purchasePrice} €)` : ''}`
+          : `Výkup za ${input.purchasePrice} € (${phoneGrade(input.grade).label})`,
+      ),
+    ],
     createdBy: actorName(),
   });
   await setDoc(doc(col.phones(), id), { ...data, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), closedAt: null });

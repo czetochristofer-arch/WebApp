@@ -270,6 +270,10 @@ export interface Phone {
   purchasePayment: 'hotovost' | 'prevod';
   purchasedAt: Timestamp;
   sellerDeclaration: boolean;
+  /** Ako sa zariadenie dostalo na sklad: výkup s dokladom, alebo vlastné zariadenie pridané bez výkupu. Chýba = výkup. */
+  origin?: 'vykup' | 'sklad';
+  /** Pri vlastnom zariadení: odkiaľ ho máte (napr. kúpené pred zavedením aplikácie, od dodávateľa). */
+  originNote?: string;
   tasks: PhoneTask[];
   costs: PhoneCost[];
   targetPrice?: number | null;
@@ -306,6 +310,8 @@ export interface BusinessSettings {
   orderPrefix: string;
   claimPrefix?: string;
   phonePrefix?: string;
+  /** Prefix vlastných zariadení pridaných na sklad bez výkupu. */
+  phoneStockPrefix?: string;
   /** Záruka na predané (použité) telefóny v mesiacoch. */
   phoneWarrantyMonths?: number;
   defaultWarrantyMonths: number;

@@ -7,7 +7,7 @@ import { useLiveDoc } from '@/lib/hooks';
 import { useData } from '@/features/data';
 import { DEVICE_TYPES, PHONE_CHECKS, paymentLabel, phoneGrade } from '@/lib/constants';
 import { fmtDate, fmtDateTime, fmtMoney, fmtPhone } from '@/lib/format';
-import { phoneName, saleWarrantyUntil } from '@/lib/phones';
+import { isStockPhone, phoneName, saleWarrantyUntil } from '@/lib/phones';
 import { amountInWords } from '@/lib/words';
 import type { BusinessSettings, Phone } from '@/lib/types';
 import { PageLoader } from '@/components/ui';
@@ -25,6 +25,8 @@ export default function PhonePrintPage() {
   const cached = phones.find((p) => p.id === id);
   const live = useLiveDoc<Phone>(cached ? null : doc(db, 'phones', id), cached ? 'c' : id);
   const phone = cached ?? live.data;
+  // Vlastné zariadenie pridané bez výkupu nemá výkupný doklad ani VPD.
+  const noDoc = !!phone && isStockPhone(phone) && (kind === 'vykup' || kind === 'vpd');
 
   useEffect(() => {
     document.documentElement.classList.remove('dark');
@@ -35,13 +37,14 @@ export default function PhonePrintPage() {
   }, [kind]);
 
   useEffect(() => {
-    if (!phone) return;
+    if (!phone || noDoc) return;
     document.title = `${phone.number} – ${kind}`;
     const t = setTimeout(() => window.print(), 500);
     return () => clearTimeout(t);
-  }, [phone, kind]);
+  }, [phone, kind, noDoc]);
 
   if (!phone) return live.loading ? <PageLoader /> : <p className="p-8">Telefón sa nenašiel.</p>;
+  if (noDoc) return <p className="p-8">Zariadenie {phone.number} bolo pridané na sklad bez výkupu – výkupný doklad sa preň netlačí.</p>;
 
   return (
     <div className="min-h-dvh bg-stone-100 text-black print:bg-white">

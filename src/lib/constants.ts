@@ -208,6 +208,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   orderPrefix: 'O',
   claimPrefix: 'R',
   phonePrefix: 'V',
+  phoneStockPrefix: 'S',
   phoneWarrantyMonths: 12,
   defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
   protocolTerms: DEFAULT_TERMS,

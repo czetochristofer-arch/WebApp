@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getDocs, limit, orderBy, query, where } from 'firebase/firestore';
 import { endOfMonth, startOfMonth } from 'date-fns';
-import { BatteryMedium, Clock, MapPin, Plus, Search, Smartphone, TrendingUp, Warehouse, Wallet, Wrench } from 'lucide-react';
+import { BatteryMedium, Clock, MapPin, PackagePlus, Plus, Search, Smartphone, TrendingUp, Warehouse, Wallet, Wrench } from 'lucide-react';
 import { useData } from '@/features/data';
 import { inRange } from '@/features/metrics';
 import { Badge, Button, EmptyState, Input, PageHeader, StatCard, cx, toneDot } from '@/components/ui';
@@ -11,7 +11,7 @@ import { col } from '@/lib/db';
 import { fmtMoney } from '@/lib/format';
 import { matches, searchToken } from '@/lib/keywords';
 import { useDebounced } from '@/lib/hooks';
-import { daysInStock, isPhoneOpen, phoneName, phoneProfit, repairCosts, totalCost } from '@/lib/phones';
+import { daysInStock, isPhoneOpen, isStockPhone, phoneName, phoneProfit, repairCosts, totalCost } from '@/lib/phones';
 import type { Phone, PhoneStatus } from '@/lib/types';
 
 type Filter = 'sklad' | PhoneStatus | 'vsetky';
@@ -66,7 +66,7 @@ export default function PhonesPage() {
     return all
       .filter((p) => (dq.trim() ? matches([p.number, p.device.brand, p.device.model, p.device.storage, p.device.color, p.device.imei, p.device.serial, p.seller?.name, p.sale?.buyer?.name], dq) : true))
       .filter((p) => dq.trim() || filter === 'vsetky' || (filter === 'sklad' ? isPhoneOpen(p) : p.status === filter))
-      .sort((a, b) => (isPhoneOpen(a) && isPhoneOpen(b) ? order.indexOf(a.status) - order.indexOf(b.status) || b.seq - a.seq : (b.closedAt?.toMillis() ?? 0) - (a.closedAt?.toMillis() ?? 0)));
+      .sort((a, b) => (isPhoneOpen(a) && isPhoneOpen(b) ? order.indexOf(a.status) - order.indexOf(b.status) || (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0) : (b.closedAt?.toMillis() ?? 0) - (a.closedAt?.toMillis() ?? 0)));
   }, [phones, remote, filter, dq]);
 
   return (
@@ -75,9 +75,14 @@ export default function PhonesPage() {
         title="Telefóny"
         subtitle="Výkup, repas a predaj použitých zariadení"
         actions={
-          <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => navigate('/telefony/vykup')}>
-            Nový výkup
-          </Button>
+          <>
+            <Button icon={<PackagePlus className="size-4" />} onClick={() => navigate('/telefony/vykup?rezim=sklad')}>
+              Pridať vlastné
+            </Button>
+            <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => navigate('/telefony/vykup')}>
+              Nový výkup
+            </Button>
+          </>
         }
       />
 
@@ -109,7 +114,7 @@ export default function PhonesPage() {
           <EmptyState
             icon={<Smartphone />}
             title={dq ? 'Nič sa nenašlo' : 'Žiadne telefóny v tomto zozname'}
-            text="Vykúpený telefón zapíšete cez Nový výkup – vytlačí sa výkupný doklad a telefón sa zaradí na sklad."
+            text="Vykúpený telefón zapíšete cez Nový výkup – vytlačí sa výkupný doklad a telefón sa zaradí na sklad. Zariadenie, ktoré už vlastníte, pridáte cez Pridať vlastné."
             action={<Button variant="primary" onClick={() => navigate('/telefony/vykup')}>Nový výkup</Button>}
           />
         </div>
@@ -173,6 +178,7 @@ function PhoneCard({ p }: { p: Phone }) {
               </span>
             ) : null}
             {p.device.imei && <span className="tabular">…{p.device.imei.slice(-4)}</span>}
+            {isStockPhone(p) && <span className="rounded-md bg-surface-2 px-1.5 py-0.5">vlastné</span>}
           </div>
         </div>
       </div>
