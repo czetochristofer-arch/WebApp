@@ -8,6 +8,8 @@ import { Button, Card, IconButton, PageHeader, cx } from '@/components/ui';
 import { PhotoGallery } from '@/components/domain';
 import { useFeedback } from '@/components/feedback';
 import { createRepair, newRepairId } from '@/lib/db';
+import { PartDialog } from '@/features/PartPrompt';
+import type { LineItem } from '@/lib/types';
 
 export function RepairNewPage() {
   const { settings } = useData();
@@ -23,6 +25,8 @@ export function RepairNewPage() {
     return d;
   });
   const [saving, setSaving] = useState(false);
+  // Pred uložením sa opýtame na diel: skladom / treba objednať / objednaný / netreba.
+  const [askPart, setAskPart] = useState(false);
   const set = <K extends keyof RepairDraft>(k: K, v: RepairDraft[K]) => setDraft((d) => ({ ...d, [k]: v }));
 
   const submit = async (e?: FormEvent) => {
@@ -30,10 +34,15 @@ export function RepairNewPage() {
     if (!draft.customer.name.trim()) return toast('Zadajte meno zákazníka.', 'error');
     if (!draft.device.brand.trim() && !draft.device.model.trim()) return toast('Zadajte značku alebo model zariadenia.', 'error');
     if (!draft.problem.trim()) return toast('Popíšte poruchu.', 'error');
+    setAskPart(true);
+  };
+
+  const save = async (items: LineItem[]) => {
     setSaving(true);
-    const res = await run(() => createRepair(draft, settings.repairPrefix, id));
+    const res = await run(() => createRepair({ ...draft, items }, settings.repairPrefix, id));
     setSaving(false);
     if (res) {
+      setAskPart(false);
       toast(`Zákazka ${res.number} vytvorená`);
       navigate(`/zakazky/${res.id}?nova=1`, { replace: true });
     }
@@ -91,6 +100,7 @@ export function RepairNewPage() {
           Uložiť zákazku
         </Button>
       </div>
+      <PartDialog open={askPart} onClose={() => setAskPart(false)} items={draft.items} device={draft.device} problem={draft.problem} onConfirm={(items) => save(items)} busy={saving} />
     </form>
   );
 }

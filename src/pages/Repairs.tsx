@@ -6,6 +6,7 @@ import { useData } from '@/features/data';
 import { isClaim, isRepairLate, isRepairOpen, repairAmount, watchesDue } from '@/features/metrics';
 import { Button, EmptyState, Input, PageHeader, Segmented, Select, cx } from '@/components/ui';
 import { DueChip, RepairStatusBadge } from '@/components/domain';
+import { PartChip } from '@/features/PartPrompt';
 import { useFeedback } from '@/components/feedback';
 import { REPAIR_STATUSES, priority } from '@/lib/constants';
 import { col, setRepairStatus } from '@/lib/db';
@@ -178,8 +179,9 @@ export function RepairsPage() {
                           </option>
                         ))}
                       </select>
-                      <div className="mt-1">
+                      <div className="mt-1 flex flex-wrap gap-1">
                         <RepairStatusBadge status={r.status} />
+                        {isRepairOpen(r) && <PartChip items={r.items} />}
                       </div>
                     </td>
                     <td className="px-4 py-3 align-top">
@@ -207,6 +209,7 @@ export function RepairsPage() {
                 {r.device.brand} {r.device.model}
               </div>
               <div className="truncate text-sm text-muted">{r.problem}</div>
+              {isRepairOpen(r) && <PartChip items={r.items} className="mt-1.5" />}
               <div className="mt-2 flex items-center justify-between gap-2 text-sm">
                 <span className="truncate">{r.customer.name}</span>
                 <span className="flex items-center gap-3">

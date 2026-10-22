@@ -27,7 +27,8 @@ export async function publicRepairStatus(id: string) {
   if (!snap.exists) return null;
   const r = snap.data() as DocumentData;
   const settings = await getSettings();
-  const amount = round2(r.items?.length ? r.total ?? 0 : r.estimate ?? 0);
+  const priced = (r.items ?? []).some((i: { qty?: number; price?: number }) => (i.qty || 0) * (i.price || 0) > 0);
+  const amount = round2(priced ? r.total ?? 0 : r.estimate ?? r.total ?? 0);
   const deposit = round2(r.deposit ?? 0);
   const closed = r.closedAt instanceof Timestamp ? r.closedAt.toDate() : null;
   const w = warrantyOf(r, Number(settings.defaultWarrantyMonths) || DEFAULT_WARRANTY_MONTHS);
@@ -55,7 +56,10 @@ export async function publicRepairStatus(id: string) {
     toPay: r.paid ? 0 : Math.max(0, round2(amount - deposit)),
     paid: !!r.paid,
     items: r.status === 'caka_schvalenie' || r.status === 'hotove' || r.status === 'vydane'
-      ? (r.items ?? []).map((i: DocumentData) => ({ name: i.name, qty: i.qty, price: i.price }))
+      ? (r.items ?? [])
+          // Diel zapísaný len kvôli objednaniu (bez ceny) zákazník nevidí.
+          .filter((i: DocumentData) => !(i.kind === 'diel' && !((i.price || 0) > 0)))
+          .map((i: DocumentData) => ({ name: i.name, qty: i.qty, price: i.price }))
       : [],
     warranty: warrantyText(w),
     warrantyUntil: r.status === 'vydane' && closed ? warrantyEndYmd(w, closed) : null,

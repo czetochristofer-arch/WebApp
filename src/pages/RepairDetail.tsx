@@ -11,7 +11,10 @@ import {
   ExternalLink,
   History,
   PackageCheck,
+  Package,
   PackageOpen,
+  Plus,
+  Receipt,
   ShieldCheck,
   Printer,
   Save,
@@ -32,11 +35,14 @@ import { useShell } from '@/components/Layout';
 import { Badge, Button, Card, IconButton, Input, Modal, PageLoader, Select, cx } from '@/components/ui';
 import { ContactButtons, PhotoGallery, RepairStatusBadge, fillTemplate } from '@/components/domain';
 import { useFeedback } from '@/components/feedback';
-import { PAYMENT_METHODS, REPAIR_STATUSES, eventType, priority, warrantyLabel, warrantyOf, warrantyUntil } from '@/lib/constants';
-import { addRepairNote, deleteRepair, setRepairStatus, updateRepair } from '@/lib/db';
+import { PART_STATUSES, PAYMENT_METHODS, REPAIR_STATUSES, eventType, priority, warrantyLabel, warrantyOf, warrantyUntil } from '@/lib/constants';
+import { addRepairItem, addRepairNote, deleteRepair, setPartStatus, setRepairStatus, updateRepair } from '@/lib/db';
+import { PartChip, PartDialog, partItems } from '@/features/PartPrompt';
+import { InvoiceDialog } from '@/features/InvoiceDialog';
+import { invoiceOutdated, issueInvoice } from '@/lib/invoice';
 import { fmtDate, fmtDateTime, fmtDay, fmtMoney, fmtTime } from '@/lib/format';
 import { copyText, statusUrl } from '@/lib/links';
-import { isClaim, receivedAt } from '@/features/metrics';
+import { hasPricedItems, isClaim, receivedAt } from '@/features/metrics';
 import { ClaimPanel, LinkedClaims } from '@/features/ClaimPanel';
 import type { PaymentMethod, Repair } from '@/lib/types';
 
@@ -105,6 +111,8 @@ function RepairDetail({ repair }: { repair: Repair }) {
   const dirty = sig(draft) !== base;
   const [saving, setSaving] = useState(false);
   const [handover, setHandover] = useState(false);
+  const [addPart, setAddPart] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [eventInit, setEventInit] = useState<EventDraftInit | null>(null);
   const [note, setNote] = useState('');
   const claim = isClaim(repair);
@@ -148,7 +156,8 @@ function RepairDetail({ repair }: { repair: Repair }) {
     setSaving(false);
   };
 
-  const amount = draft.items.length ? draft.items.reduce((s, i) => s + i.qty * i.price, 0) : draft.estimate ?? 0;
+  const priced = hasPricedItems(draft.items);
+  const amount = priced ? draft.items.reduce((s, i) => s + i.qty * i.price, 0) : draft.estimate ?? 0;
   const remaining = Math.max(0, amount - (draft.deposit || 0));
   const closed = repair.status === 'vydane' || repair.status === 'zrusene';
   const linkedEvents = useMemo(() => events.filter((e) => e.repairId === repair.id).sort((a, b) => a.start.toMillis() - b.start.toMillis()), [events, repair.id]);
@@ -191,6 +200,7 @@ function RepairDetail({ repair }: { repair: Repair }) {
               <h1 className="text-2xl font-bold tracking-tight tabular">{repair.number}</h1>
               {claim && <Badge tone="red">Reklamácia{repair.claim?.originalNumber ? ` k ${repair.claim.originalNumber}` : ''}</Badge>}
               <RepairStatusBadge status={repair.status} />
+              {!closed && <PartChip items={repair.items} />}
               {(repair.priority === 'vysoka' || repair.priority === 'urgentna') && <Badge tone={priority(repair.priority).tone}>{priority(repair.priority).label} priorita</Badge>}
             </div>
             <p className="mt-0.5 truncate text-sm text-muted">
@@ -302,9 +312,10 @@ function RepairDetail({ repair }: { repair: Repair }) {
 
         <div className="space-y-4">
           {claim && <ClaimPanel repair={repair} />}
+          <PartsCard repair={repair} onAdd={() => setAddPart(true)} />
           <Card title="Platba">
             <dl className="space-y-2 text-sm">
-              <Row label={draft.items.length ? 'Suma za opravu' : 'Predbežná cena'} value={fmtMoney(amount)} strong />
+              <Row label={priced ? 'Suma za opravu' : 'Predbežná cena'} value={fmtMoney(amount)} strong />
               <Row label="Záloha" value={fmtMoney(draft.deposit)} />
               <Row label="Zostáva doplatiť" value={repair.paid ? fmtMoney(0) : fmtMoney(remaining)} strong />
             </dl>
@@ -337,6 +348,33 @@ function RepairDetail({ repair }: { repair: Repair }) {
               <Button className="mt-4 w-full" icon={<Printer className="size-4" />} onClick={() => print('vydajka')}>
                 {claim ? 'Tlačiť doklad o vybavení' : 'Tlačiť výdajku'}
               </Button>
+            )}
+            {!claim && (
+              <div className="mt-3 border-t border-line pt-3">
+                {repair.invoice ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <span className="flex items-center gap-1.5">
+                        <Receipt className="size-4 text-muted" /> Faktúra <b className="tabular">{repair.invoice.number}</b>
+                      </span>
+                      <span className="text-xs text-muted">{fmtDate(repair.invoice.issuedAt)}</span>
+                    </div>
+                    {invoiceOutdated(repair) && <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-300">Zákazka sa od vystavenia faktúry zmenila – skontrolujte faktúru.</p>}
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <Button size="sm" icon={<Printer className="size-4" />} onClick={() => print('faktura')}>
+                        Tlačiť faktúru
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setInvoiceOpen(true)}>
+                        Upraviť údaje
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <Button size="sm" variant="ghost" className="w-full" icon={<Receipt className="size-4" />} onClick={() => setInvoiceOpen(true)}>
+                    Vystaviť faktúru
+                  </Button>
+                )}
+              </div>
             )}
             {warrantyEnd && !claim && (
               <p className={cx('mt-3 flex items-center gap-2 rounded-xl px-3 py-2 text-sm', warrantyEnd >= new Date() ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-surface-2 text-muted')}>
@@ -462,15 +500,88 @@ function RepairDetail({ repair }: { repair: Repair }) {
         onClose={() => setHandover(false)}
         repair={repair}
         amount={amount}
-        onDone={() => {
-          toast('Zariadenie vydané');
-          print('vydajka');
+        onDone={(invoice) => {
+          toast(invoice ? 'Zariadenie vydané, faktúra vystavená' : 'Zariadenie vydané');
+          print(invoice ? 'faktura' : 'vydajka');
         }}
         dirtySave={dirty ? save : undefined}
         defaultMonths={settings.defaultWarrantyMonths}
       />
+      <InvoiceDialog open={invoiceOpen} onClose={() => setInvoiceOpen(false)} repair={repair} onIssued={() => print('faktura')} />
+      <PartDialog
+        open={addPart}
+        mode="add"
+        onClose={() => setAddPart(false)}
+        items={draft.items}
+        device={repair.device}
+        problem={repair.problem}
+        onConfirm={async (_items, added) => {
+          if (!added) return setAddPart(false);
+          // Pri rozpracovaných úpravách pridáme diel do nich (uloží sa spolu s nimi), inak hneď.
+          if (dirty) {
+            set('items', [...draft.items, added]);
+            toast('Diel pridaný – nezabudnite uložiť zmeny');
+          } else await run(() => addRepairItem(repair.id, added), 'Diel pridaný');
+          setAddPart(false);
+        }}
+      />
       <EventDialog open={!!eventInit} init={eventInit} onClose={() => setEventInit(null)} />
     </div>
+  );
+}
+
+/** Diely zákazky so stavom – zmena stavu sa uloží hneď (transakcia nad aktuálnou zákazkou). */
+function PartsCard({ repair, onAdd }: { repair: Repair; onAdd: () => void }) {
+  const { run } = useFeedback();
+  const parts = partItems(repair.items);
+  return (
+    <Card
+      title="Diely"
+      icon={<Package className="size-4" />}
+      actions={
+        <Button size="sm" variant="ghost" icon={<Plus className="size-4" />} onClick={onAdd}>
+          Pridať diel
+        </Button>
+      }
+    >
+      {parts.length === 0 ? (
+        <p className="text-sm text-muted">Bez dielov – oprava nepotrebuje diel, alebo ešte nie je zapísaný.</p>
+      ) : (
+        <ul className="space-y-3">
+          {parts.map((i) => (
+            <li key={i.id}>
+              <p className="text-sm font-semibold">
+                {i.name || 'Diel bez názvu'}
+                {i.supplier && <span className="font-normal text-muted"> · {i.supplier}</span>}
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {PART_STATUSES.map((s) => {
+                  const active = (i.partStatus ?? 'treba_objednat') === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => !active && run(() => setPartStatus(repair.id, [i.id], s.id))}
+                      className={cx(
+                        'rounded-full border px-2.5 py-0.5 text-xs font-semibold',
+                        active
+                          ? s.tone === 'red'
+                            ? 'border-red-500 bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300'
+                            : s.tone === 'amber'
+                              ? 'border-amber-500 bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200'
+                              : 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+                          : 'border-line text-muted hover:text-fg',
+                      )}
+                    >
+                      {s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
   );
 }
 
@@ -496,11 +607,18 @@ function HandoverDialog({
   onClose: () => void;
   repair: Repair;
   amount: number;
-  onDone: () => void;
+  onDone: (invoice: boolean) => void;
   dirtySave?: () => Promise<void>;
   defaultMonths: number;
 }) {
   const { run } = useFeedback();
+  const { settings } = useData();
+  const claimDoc = repair.kind === 'reklamacia';
+  const [invoice, setInvoice] = useState(false);
+  useEffect(() => {
+    if (open) setInvoice(!claimDoc && !repair.invoice && (settings.invoiceOnHandover ?? true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   const [method, setMethod] = useState<PaymentMethod>('hotovost');
   const [paid, setPaid] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -523,10 +641,12 @@ function HandoverDialog({
               const ok = await run(() =>
                 updateRepair(repair, { status: 'vydane', paid: paid || repair.paid, paymentMethod: paid ? method : repair.paymentMethod ?? null }, `Vydané zákazníkovi${paid ? ` (${PAYMENT_METHODS.find((p) => p.id === method)?.label})` : ''}`),
               );
+              // Faktúra sa vystaví až po vydaní – prevezme dátum vydania a spôsob platby.
+              const issued = ok !== undefined && invoice ? await run(() => issueInvoice(repair.id, settings)) : undefined;
               setBusy(false);
               if (ok !== undefined) {
                 onClose();
-                onDone();
+                onDone(!!issued || !!repair.invoice);
               }
             }}
           >
@@ -562,8 +682,21 @@ function HandoverDialog({
             )}
           </>
         )}
+        {!claimDoc && !repair.invoice && (
+          <label className="flex items-start gap-2 rounded-xl border border-line p-3 text-sm">
+            <input type="checkbox" checked={invoice} onChange={(e) => setInvoice(e.target.checked)} className="mt-0.5 size-4 accent-[var(--primary)]" />
+            <span>
+              <span className="font-medium">Vystaviť faktúru</span>
+              <span className="block text-xs text-muted">Doklad do účtovníctva – úhradu potom zaevidujete v pokladnici (eKasa) ako úhradu faktúry.</span>
+            </span>
+          </label>
+        )}
         <p className="text-xs text-muted">
-          {repair.kind === 'reklamacia' ? 'Po vydaní sa otvorí doklad o vybavení reklamácie.' : `Po vydaní sa otvorí výdajka na tlač so zárukou ${warrantyLabel(repair, defaultMonths)}.`}
+          {claimDoc
+            ? 'Po vydaní sa otvorí doklad o vybavení reklamácie.'
+            : invoice || repair.invoice
+              ? `Po vydaní sa otvorí faktúra – zároveň doklad o vydaní a záručný list (${warrantyLabel(repair, defaultMonths)}).`
+              : `Po vydaní sa otvorí výdajka na tlač so zárukou ${warrantyLabel(repair, defaultMonths)}.`}
         </p>
       </div>
     </Modal>

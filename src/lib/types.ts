@@ -102,6 +102,45 @@ export interface ClaimInfo {
   resolvedAt?: Timestamp | null;
 }
 
+/** Odberateľ na faktúre (kópia v čase vystavenia). */
+export interface InvoiceBuyer {
+  name: string;
+  company?: string;
+  address?: string;
+  ico?: string;
+  dic?: string;
+  icdph?: string;
+}
+
+export interface InvoiceLine {
+  name: string;
+  qty: number;
+  /** Cena za kus (s DPH, ak je platiteľ). */
+  price: number;
+}
+
+/**
+ * Faktúra k zákazke. Údaje sa pri vystavení skopírujú, aby sa doklad pri ďalšej tlači nezmenil
+ * ani keď sa neskôr upraví zákazka alebo zákazník. Číslo sa už nemení.
+ */
+export interface InvoiceInfo {
+  number: string;
+  seq: number;
+  year: number;
+  issuedAt: Timestamp;
+  /** Dátum dodania (uskutočnenia zdaniteľného plnenia). */
+  supplyAt: Timestamp;
+  dueAt: Timestamp;
+  paymentMethod: PaymentMethod;
+  buyer: InvoiceBuyer;
+  lines: InvoiceLine[];
+  total: number;
+  deposit: number;
+  /** Sadzba DPH v % – len ak bola firma pri vystavení platiteľom DPH. */
+  vatRate?: number | null;
+  note?: string;
+}
+
 export interface Repair {
   id: string;
   /** Chýba pri bežných zákazkách (= oprava). */
@@ -137,6 +176,7 @@ export interface Repair {
   createdAt: Timestamp;
   /** Kedy zákazník zariadenie priniesol (pri zákazkách, ktoré začali ako „oznámené“). */
   receivedAt?: Timestamp | null;
+  invoice?: InvoiceInfo | null;
   updatedAt?: Timestamp;
   closedAt?: Timestamp | null;
   createdBy?: string;
@@ -315,6 +355,14 @@ export interface BusinessSettings {
   /** Záruka na predané (použité) telefóny v mesiacoch. */
   phoneWarrantyMonths?: number;
   defaultWarrantyMonths: number;
+  /** Faktúry: prefix pred rokom (predvolene žiadny → 20260001), splatnosť v dňoch, sadzba DPH. */
+  invoicePrefix?: string;
+  invoiceDueDays?: number;
+  vatRate?: number;
+  /** Pri vydaní zákazky predvolene vystaviť faktúru. */
+  invoiceOnHandover?: boolean;
+  /** Údaj o zápise do registra (živnostenský / obchodný register) – povinný údaj na faktúre. */
+  registration?: string;
   protocolTerms: string;
   smsReadyTemplate: string;
   smsOrderTemplate: string;

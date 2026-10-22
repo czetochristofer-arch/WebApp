@@ -182,7 +182,10 @@ export async function createRepair(input: RepairInput, prefix: string, id = newR
     seq,
     ...totals(input.items),
     keywords: repairKeywords({ ...input, number }),
-    history: [history(claim ? `Reklamácia prijatá${input.claim?.originalNumber ? ` (k ${input.claim.originalNumber})` : ''}` : `Zákazka vytvorená (${repairStatus(input.status).label})`)],
+    history: [
+      history(claim ? `Reklamácia prijatá${input.claim?.originalNumber ? ` (k ${input.claim.originalNumber})` : ''}` : `Zákazka vytvorená (${repairStatus(input.status).label})`),
+      ...input.items.filter((i) => i.kind === 'diel').map((i) => history(`Diel ${i.name} – ${partLabel(i.partStatus).toLowerCase()}`)),
+    ],
     createdBy: actorName(),
   });
   await setDoc(doc(col.repairs(), id), { ...data, createdAt: serverTimestamp(), updatedAt: serverTimestamp(), closedAt: null });
@@ -235,6 +238,20 @@ export async function setPartStatus(repairId: string, itemIds: string[], status:
     if (!names.length) return;
     const label = PART_STATUSES.find((p) => p.id === status)?.label ?? status;
     tx.update(ref, { items: clean(next), updatedAt: serverTimestamp(), history: arrayUnion(history(`Diely – ${label.toLowerCase()}: ${names.join(', ')}`)) });
+  });
+}
+
+const partLabel = (status?: PartStatus | null) => PART_STATUSES.find((p) => p.id === (status ?? 'treba_objednat'))?.label ?? '';
+
+/** Pridá diel (alebo inú položku) k zákazke – transakcia nad aktuálnymi položkami, nič neprepíše. */
+export async function addRepairItem(repairId: string, item: LineItem) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'repairs', repairId);
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error('Zákazka sa nenašla.');
+    const items = [...((snap.data().items ?? []) as LineItem[]), item];
+    const note = item.kind === 'diel' ? `Pridaný diel ${item.name} – ${partLabel(item.partStatus).toLowerCase()}` : `Pridaná položka ${item.name}`;
+    tx.update(ref, { items: clean(items), ...totals(items), updatedAt: serverTimestamp(), history: arrayUnion(history(note)) });
   });
 }
 

@@ -6,14 +6,15 @@ import { Printer, X } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import { useLiveDoc } from '@/lib/hooks';
 import { useData } from '@/features/data';
-import { claimDeadline, receivedAt, repairAmount } from '@/features/metrics';
+import { claimDeadline, hasPricedItems, receivedAt, repairAmount } from '@/features/metrics';
+import { variableSymbol } from '@/lib/invoice';
 import { CLAIM_DAYS, DEVICE_TYPES, claimResolution, paymentLabel, warrantyLabel, warrantyUntil } from '@/lib/constants';
 import { repairQrUrl } from '@/lib/links';
 import { fmtDate, fmtDateTime, fmtMoney, fmtPhone, toDate } from '@/lib/format';
 import type { BusinessSettings, Repair } from '@/lib/types';
 import { PageLoader } from '@/components/ui';
 
-type Kind = 'protokol' | 'stitok' | 'vydajka';
+type Kind = 'protokol' | 'stitok' | 'vydajka' | 'faktura';
 
 export default function PrintPage() {
   const { kind = 'protokol', id = '' } = useParams<{ kind: Kind; id: string }>();
@@ -32,7 +33,7 @@ export default function PrintPage() {
 
   useEffect(() => {
     if (!repair) return;
-    document.title = `${repair.number} – ${kind}`;
+    document.title = kind === 'faktura' && repair.invoice ? `Faktura ${repair.invoice.number}` : `${repair.number} – ${kind}`;
     const t = setTimeout(() => window.print(), 400);
     return () => clearTimeout(t);
   }, [repair, kind]);
@@ -59,6 +60,8 @@ export default function PrintPage() {
             ) : (
               <ClaimIntake repair={repair} s={settings} />
             )
+          ) : kind === 'faktura' ? (
+            invoiceOrNotice(repair, settings)
           ) : kind === 'vydajka' ? (
             <Handover repair={repair} s={settings} />
           ) : (
@@ -215,7 +218,7 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
         </Block>
       )}
       <Block title="Vykonané práce a použitý materiál">
-        {r.items.length ? (
+        {hasPricedItems(r.items) ? (
           <table className="w-full text-[12px]">
             <thead>
               <tr className="border-b border-stone-400 text-left text-[10px] text-stone-500 uppercase">
@@ -226,7 +229,8 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
               </tr>
             </thead>
             <tbody>
-              {r.items.map((i) => (
+              {/* Diel zapísaný len kvôli objednaniu (bez ceny) je zahrnutý v cene opravy. */}
+              {r.items.filter((i) => !(i.kind === 'diel' && !(i.qty * i.price))).map((i) => (
                 <tr key={i.id} className="border-b border-stone-200">
                   <td className="py-1">{i.name}</td>
                   <td className="py-1 text-right tabular">{i.qty}</td>
@@ -255,16 +259,152 @@ function Handover({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
         {r.paid && <p className="text-right text-stone-500">Spôsob platby: {paymentLabel(r.paymentMethod)}</p>}
         {!s.vatPayer && <p className="text-right text-[10px] text-stone-500">Nie sme platiteľmi DPH.</p>}
       </div>
-      <div className="mt-5 rounded-lg border-2 border-black p-3 text-[12px]">
-        <p className="font-bold">
-          Záruka {warrantyLabel(r, s.defaultWarrantyMonths)} – platí do {fmtDate(until)}
-        </p>
-        <p className="mt-1 text-[10.5px] text-stone-700">
-          Záruka sa vzťahuje na vykonanú opravu a vymenené diely. Nevzťahuje sa na mechanické poškodenie, poškodenie tekutinou, neodborný zásah ani bežné opotrebenie. Pri reklamácii
-          predložte tento doklad.
-        </p>
-      </div>
+      <WarrantyBox r={r} s={s} until={until} />
       <Signatures left="Vydal za servis" right="Zariadenie prevzal zákazník" />
+    </div>
+  );
+}
+
+function WarrantyBox({ r, s, until }: { r: Repair; s: BusinessSettings; until: Date }) {
+  return (
+    <div className="mt-5 rounded-lg border-2 border-black p-3 text-[12px] break-inside-avoid">
+      <p className="font-bold">
+        Záruka {warrantyLabel(r, s.defaultWarrantyMonths)} – platí do {fmtDate(until)}
+      </p>
+      <p className="mt-1 text-[10.5px] text-stone-700">
+        Záruka sa vzťahuje na vykonanú opravu a vymenené diely. Nevzťahuje sa na mechanické poškodenie, poškodenie tekutinou, neodborný zásah ani bežné opotrebenie. Pri reklamácii
+        predložte tento doklad.
+      </p>
+    </div>
+  );
+}
+
+const invoiceOrNotice = (r: Repair, s: BusinessSettings) => (r.invoice ? <InvoiceDoc repair={r} s={s} /> : <p>K zákazke {r.number} ešte nie je vystavená faktúra.</p>);
+
+/**
+ * Faktúra k zákazke – účtovný doklad (pri platiteľovi DPH daňový doklad podľa § 74 zákona o DPH),
+ * zároveň doklad o vydaní a záručný list. Tlačí sa z údajov uložených pri vystavení.
+ */
+function InvoiceDoc({ repair: r, s }: { repair: Repair; s: BusinessSettings }) {
+  const inv = r.invoice!;
+  const rate = inv.vatRate ?? null;
+  const rows = inv.lines.map((l) => {
+    const total = l.qty * l.price;
+    const base = rate != null ? Math.round((total / (1 + rate / 100)) * 100) / 100 : total;
+    return { ...l, total, base, vat: Math.round((total - base) * 100) / 100 };
+  });
+  const sum = (k: 'total' | 'base' | 'vat') => Math.round(rows.reduce((a, x) => a + x[k], 0) * 100) / 100;
+  const deposit = inv.deposit || 0;
+  const toPay = Math.max(0, inv.total - deposit);
+  const until = warrantyUntil(r, toDate(r.closedAt) ?? toDate(inv.supplyAt) ?? new Date(), s.defaultWarrantyMonths);
+  const vs = variableSymbol(inv.number);
+  const b = inv.buyer;
+  return (
+    <div>
+      <Header s={s} title={rate != null ? 'Faktúra – daňový doklad' : 'Faktúra'} number={inv.number} date={`Vystavená ${fmtDate(inv.issuedAt)}`} />
+      {s.registration && <p className="mt-1 text-[10px] text-stone-600">{s.registration}</p>}
+      <div className="grid grid-cols-2 gap-6">
+        <Block title="Odberateľ">
+          {b.company && <p className="font-bold">{b.company}</p>}
+          <p className={b.company ? '' : 'font-bold'}>{b.name}</p>
+          {b.address && <p>{b.address}</p>}
+          <p>
+            {[b.ico && `IČO: ${b.ico}`, b.dic && `DIČ: ${b.dic}`, b.icdph && `IČ DPH: ${b.icdph}`].filter(Boolean).join(' · ')}
+          </p>
+        </Block>
+        <Block title="Údaje faktúry">
+          <KV k="Dátum vystavenia" v={fmtDate(inv.issuedAt)} />
+          <KV k="Dátum dodania" v={fmtDate(inv.supplyAt)} />
+          <KV k="Dátum splatnosti" v={fmtDate(inv.dueAt)} />
+          <KV k="Forma úhrady" v={paymentLabel(inv.paymentMethod)} />
+          <KV k="Variabilný symbol" v={vs} />
+          {inv.paymentMethod === 'prevod' && <KV k="IBAN" v={s.iban} />}
+        </Block>
+      </div>
+      <Block title="Predmet plnenia">
+        <p>
+          Servisná oprava – zákazka <b>{r.number}</b>, {deviceLine(r)}
+          {r.device.imei ? `, IMEI/SN ${r.device.imei}` : ''}, prijaté {fmtDate(receivedAt(r))}
+        </p>
+      </Block>
+      <div className="mt-3">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="border-b border-stone-400 text-left text-[10px] text-stone-500 uppercase">
+              <th className="py-1">Položka</th>
+              <th className="py-1 pl-3 text-right whitespace-nowrap">Mn.</th>
+              {rate != null ? (
+                <>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">Bez DPH/ks</th>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">DPH %</th>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">Základ</th>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">DPH</th>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">Spolu s DPH</th>
+                </>
+              ) : (
+                <>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">Cena/ks</th>
+                  <th className="py-1 pl-3 text-right whitespace-nowrap">Spolu</th>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((l, i) => (
+              <tr key={i} className="border-b border-stone-200">
+                <td className="py-1">{l.name}</td>
+                <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{l.qty}</td>
+                {rate != null ? (
+                  <>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{fmtMoney(Math.round((l.price / (1 + rate / 100)) * 100) / 100)}</td>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{rate} %</td>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{fmtMoney(l.base)}</td>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{fmtMoney(l.vat)}</td>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{fmtMoney(l.total)}</td>
+                  </>
+                ) : (
+                  <>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{fmtMoney(l.price)}</td>
+                    <td className="py-1 pl-3 text-right whitespace-nowrap tabular">{fmtMoney(l.total)}</td>
+                  </>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-4 ml-auto w-80 space-y-1 text-[12px] break-inside-avoid">
+        {rate != null && (
+          <>
+            <p className="flex justify-between">
+              <span>Základ dane {rate} %</span> <span className="tabular">{fmtMoney(sum('base'))}</span>
+            </p>
+            <p className="flex justify-between">
+              <span>DPH {rate} %</span> <span className="tabular">{fmtMoney(sum('vat'))}</span>
+            </p>
+          </>
+        )}
+        <p className="flex justify-between">
+          <span>Spolu{rate != null ? ' s DPH' : ''}</span> <b className="tabular">{fmtMoney(inv.total)}</b>
+        </p>
+        {deposit > 0 && (
+          <p className="flex justify-between">
+            <span>Uhradená záloha</span> <span className="tabular">−{fmtMoney(deposit)}</span>
+          </p>
+        )}
+        <p className="flex justify-between border-t border-black pt-1 text-sm">
+          <span className="font-bold">K úhrade</span> <b className="tabular">{fmtMoney(toPay)}</b>
+        </p>
+        {rate == null && <p className="text-right text-[10px] text-stone-500">Dodávateľ nie je platiteľom DPH.</p>}
+      </div>
+      <p className="mt-3 rounded-lg bg-stone-100 px-3 py-2 text-[11px] print:border print:border-stone-300 print:bg-white">
+        {inv.paymentMethod === 'prevod'
+          ? `Sumu ${fmtMoney(toPay)} uhraďte prevodom na účet ${s.iban || '—'} s variabilným symbolom ${vs} do ${fmtDate(inv.dueAt)}.`
+          : `Úhrada ${inv.paymentMethod === 'karta' ? 'platobnou kartou' : 'v hotovosti'} – potvrdením o úhrade je pokladničný doklad z registračnej pokladnice (eKasa) vystavený ako úhrada tejto faktúry č. ${inv.number}.`}
+      </p>
+      {inv.note && <p className="mt-2 text-[11px] whitespace-pre-wrap">{inv.note}</p>}
+      <WarrantyBox r={r} s={s} until={until} />
+      <Signatures left="Vystavil a vydal za dodávateľa" right="Prevzal odberateľ" />
     </div>
   );
 }

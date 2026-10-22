@@ -106,7 +106,9 @@ function toItem(i: z.infer<typeof itemIn>, defaultKind: LineItem['kind']): LineI
 // ------------------------------------------------------------------ prevod dokumentov do stručnej podoby
 
 const ts = (t: unknown) => (t instanceof Timestamp ? t.toDate() : null);
-const repairSum = (r: DocumentData) => (r.items?.length ? r.total : r.estimate ?? 0);
+// Diel zapísaný len kvôli objednaniu (cena 0) nemení sumu – bez nacenených položiek platí predbežná cena.
+const hasPriced = (r: DocumentData) => (r.items ?? []).some((i: { qty?: number; price?: number }) => (i.qty || 0) * (i.price || 0) > 0);
+const repairSum = (r: DocumentData) => (hasPriced(r) ? r.total : r.estimate ?? r.total ?? 0);
 const defaultMonths = (ctx: ToolContext) => Number(ctx.settings.defaultWarrantyMonths) || DEFAULT_WARRANTY_MONTHS;
 const statusLink = (ctx: ToolContext, id: string) => (ctx.appUrl ? `${ctx.appUrl}/stav/${id}` : undefined);
 
@@ -159,6 +161,7 @@ function repairFull(snap: DocumentSnapshot, ctx: ToolContext) {
     naklady: r.totalCost,
     zaloha: r.deposit,
     sposob_platby: r.paymentMethod,
+    faktura: r.invoice ? { cislo: r.invoice.number, vystavena: ts(r.invoice.issuedAt) ? localYmd(ts(r.invoice.issuedAt)!) : null, suma: r.invoice.total } : undefined,
     reklamacia:
       r.kind === 'reklamacia'
         ? {

@@ -8,6 +8,7 @@ import { Badge, Button, Card, IconButton, Input, PageHeader, Segmented, Select, 
 import { useFeedback } from '@/components/feedback';
 import { col, getCounter, type CounterKind, inviteMember, removeInvite, removeMember, saveSettings, setCounter } from '@/lib/db';
 import { useLiveQuery } from '@/lib/hooks';
+import { getInvoiceCounter, invoiceNumber, setInvoiceCounter } from '@/lib/invoice';
 import { fmtDateTime, toDate } from '@/lib/format';
 import type { AgentModel, BusinessSettings, Member } from '@/lib/types';
 import { loadVoicePrefs, saveVoicePrefs, Speaker, ttsSupported, unlockSpeech, useVoices, type VoicePrefs } from '@/features/assistant/tts';
@@ -84,6 +85,16 @@ function BusinessSection() {
           />
         </div>
         {draft.vatPayer && <Input label="IČ DPH" value={draft.icdph ?? ''} onChange={(e) => set('icdph', e.target.value)} />}
+        {draft.vatPayer && (
+          <Input label="Sadzba DPH na faktúrach" suffix="%" inputMode="numeric" value={draft.vatRate ?? 23} onChange={(e) => set('vatRate', Number(e.target.value.replace(/\D/g, '')) || 0)} />
+        )}
+        <Input
+          label="Zápis v registri (na faktúru)"
+          wrapClass="sm:col-span-2"
+          value={draft.registration ?? ''}
+          onChange={(e) => set('registration', e.target.value)}
+          placeholder="napr. Zapísaný v Živnostenskom registri Okresného úradu Michalovce, č. 860-12345"
+        />
       </fieldset>
       <SaveBar dirty={dirty} onSave={save} />
     </Card>
@@ -109,6 +120,14 @@ function DocumentsSection() {
           <Input label="Prefix objednávok" value={draft.orderPrefix} onChange={(e) => set('orderPrefix', e.target.value.toUpperCase())} />
           <Input label="Prefix reklamácií" value={draft.claimPrefix ?? 'R'} onChange={(e) => set('claimPrefix', e.target.value.toUpperCase())} />
           <Input label="Prefix výkupov" value={draft.phonePrefix ?? 'V'} onChange={(e) => set('phonePrefix', e.target.value.toUpperCase())} />
+          <Input label="Prefix faktúr" value={draft.invoicePrefix ?? ''} onChange={(e) => set('invoicePrefix', e.target.value.toUpperCase())} hint={`Faktúra bude ${draft.invoicePrefix ?? ''}${new Date().getFullYear()}0001`} />
+          <Input
+            label="Splatnosť faktúr pri prevode"
+            suffix="dní"
+            inputMode="numeric"
+            value={draft.invoiceDueDays ?? 14}
+            onChange={(e) => set('invoiceDueDays', Number(e.target.value.replace(/\D/g, '')) || 0)}
+          />
           <Input label="Prefix vlastných zariadení" value={draft.phoneStockPrefix ?? 'S'} onChange={(e) => set('phoneStockPrefix', e.target.value.toUpperCase())} hint="Pridané na sklad bez výkupu" />
           <Input
             label="Záruka na predané telefóny"
@@ -142,8 +161,15 @@ function DocumentsSection() {
             <CounterInput label="Ďalšie číslo reklamácie" kind="claims" value={counters.claims} prefix={draft.claimPrefix ?? 'R'} />
             <CounterInput label="Ďalšie číslo výkupu" kind="phones" value={counters.phones} prefix={draft.phonePrefix ?? 'V'} />
             <CounterInput label="Ďalšie číslo vlastného zariadenia" kind="phoneStock" value={counters.phoneStock} prefix={draft.phoneStockPrefix ?? 'S'} />
+            <InvoiceCounterInput prefix={draft.invoicePrefix ?? ''} />
           </div>
         )}
+        <Toggle
+          checked={draft.invoiceOnHandover ?? true}
+          onChange={(v) => set('invoiceOnHandover', v)}
+          label="Pri vydaní zákazky vystaviť faktúru"
+          hint="Predvolene zaškrtnuté v okne Vydať zákazníkovi – faktúra je zároveň doklad o vydaní a záručný list"
+        />
         <Textarea label="Podmienky servisu (tlačia sa na preberací protokol)" value={draft.protocolTerms} onChange={(e) => set('protocolTerms', e.target.value)} rows={6} />
         <Textarea
           label="SMS – zariadenie je hotové"
@@ -176,6 +202,46 @@ function CounterInput({ label, kind, value, prefix }: { label: string; kind: Cou
       <Input label={label} inputMode="numeric" value={v} onChange={(e) => setV(e.target.value.replace(/\D/g, ''))} hint={`Ďalšia bude ${prefix}-${v || value}`} wrapClass="flex-1" />
       {changed && (
         <Button className="mb-5" onClick={() => run(() => setCounter(kind, Number(v)), 'Číslovanie nastavené')}>
+          Nastaviť
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function InvoiceCounterInput({ prefix }: { prefix: string }) {
+  const year = new Date().getFullYear();
+  const [value, setValue] = useState<number | null>(null);
+  const [v, setV] = useState('');
+  const { run } = useFeedback();
+  useEffect(() => {
+    getInvoiceCounter(year)
+      .then((n) => {
+        setValue(n);
+        setV(String(n));
+      })
+      .catch(() => undefined);
+  }, [year]);
+  if (value == null) return null;
+  const changed = Number(v) !== value && Number(v) > 0;
+  return (
+    <div className="flex items-end gap-2">
+      <Input
+        label={`Ďalšie číslo faktúry (${year})`}
+        inputMode="numeric"
+        value={v}
+        onChange={(e) => setV(e.target.value.replace(/\D/g, ''))}
+        hint={`Ďalšia bude ${invoiceNumber(prefix, year, Number(v) || value)}`}
+        wrapClass="flex-1"
+      />
+      {changed && (
+        <Button
+          className="mb-5"
+          onClick={async () => {
+            const ok = await run(() => setInvoiceCounter(year, Number(v)), 'Číslovanie faktúr nastavené');
+            if (ok !== undefined) setValue(Number(v));
+          }}
+        >
           Nastaviť
         </Button>
       )}

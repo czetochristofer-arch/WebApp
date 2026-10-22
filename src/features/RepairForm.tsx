@@ -6,6 +6,7 @@ import type { RepairInput } from '@/lib/db';
 import type { Priority } from '@/lib/types';
 import { Card, Input, Segmented, Textarea, cx } from '@/components/ui';
 import { CustomerPicker, ItemsEditor } from '@/components/domain';
+import { hasPricedItems } from '@/features/metrics';
 import { Cpu, Euro, NotebookPen, UserRound, Wrench } from 'lucide-react';
 import type { ReactNode } from 'react';
 
@@ -116,7 +117,7 @@ export function RepairFormSections({ draft, set, compact, claim }: { draft: Repa
             suffix="€"
             value={draft.estimate ?? ''}
             onChange={(e) => set('estimate', e.target.value === '' ? null : parseNum(e.target.value))}
-            hint={draft.items.length ? 'Konečná suma sa počíta z položiek' : 'Ak ešte nie sú položky'}
+            hint={hasPricedItems(draft.items) ? 'Konečná suma sa počíta z položiek' : 'Ak ešte nie sú nacenené položky'}
           />
           <Input label="Záloha" inputMode="decimal" suffix="€" value={draft.deposit || ''} onChange={(e) => set('deposit', parseNum(e.target.value))} />
           <Input

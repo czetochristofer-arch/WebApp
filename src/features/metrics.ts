@@ -18,8 +18,10 @@ export const claimDeadline = (r: Repair) => addDays(toDate(receivedAt(r)) ?? new
 /** Diel, ktorý ešte nie je objednaný (aj diel bez stavu – napr. pridaný z cenníka). */
 export const partNeedsOrder = (i: LineItem) => i.kind === 'diel' && (!i.partStatus || i.partStatus === 'treba_objednat');
 
-/** Suma zákazky – ak nemá položky, použije sa predbežná cena. */
-export const repairAmount = (r: Repair) => (r.items?.length ? r.total : r.estimate ?? 0);
+/** Má zákazka nacenené položky? Diel zapísaný len kvôli objednaniu (cena 0) sa nepočíta. */
+export const hasPricedItems = (items?: LineItem[]) => !!items?.some((i) => (i.qty || 0) * (i.price || 0) > 0);
+/** Suma zákazky – ak nemá nacenené položky, použije sa predbežná cena. */
+export const repairAmount = (r: Repair) => (hasPricedItems(r.items) ? r.total : r.estimate ?? r.total ?? 0);
 
 export function inRange(ts: Timestamp | null | undefined, from: Date, to: Date) {
   const d = toDate(ts);
