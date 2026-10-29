@@ -5,7 +5,7 @@ import { db, storage } from './firebase';
 import { actorName, clean, col, history, nextNumber } from './db';
 import { buildKeywords } from './keywords';
 import { round2, toDate } from './format';
-import { phoneGrade, phoneStatus } from './constants';
+import { DEFAULT_AD_FOOTER, PHONE_CHECKS, phoneGrade, phoneStatus } from './constants';
 import type { Phone, PhoneSale, PhoneStatus } from './types';
 
 export type PhoneInput = Omit<Phone, 'id' | 'number' | 'seq' | 'keywords' | 'history' | 'createdAt' | 'updatedAt' | 'closedAt' | 'createdBy'>;
@@ -127,20 +127,61 @@ export async function deletePhone(p: Phone) {
 }
 
 /** Text inzerátu (Bazoš, Marketplace…) – stačí skopírovať. */
-export function adText(p: Phone, business: { name: string; address?: string; phone?: string }, warrantyMonths: number) {
-  const g = phoneGrade(p.grade);
-  const lines = [
-    `Predám ${phoneName(p)}${p.device.color ? `, ${p.device.color}` : ''}`,
-    '',
-    `Stav: ${g.label} (${g.text.toLowerCase()})`,
-    p.device.batteryHealth ? `Kondícia batérie: ${p.device.batteryHealth} %` : '',
-    p.tasks?.some((t) => t.done && /bat/i.test(t.name)) ? 'Nová batéria' : '',
-    p.device.accessories ? `Príslušenstvo: ${p.device.accessories}` : '',
-    'Telefón je skontrolovaný v servise, odblokovaný pre všetky siete, bez viazanosti na účet.',
-    `Záruka ${warrantyMonths} mesiacov, doklad o kúpe.`,
-    '',
-    p.targetPrice ? `Cena: ${p.targetPrice} €` : '',
-    `${business.name}${business.address ? `, ${business.address}` : ''}${business.phone ? `, tel. ${business.phone}` : ''}`,
-  ];
-  return lines.filter((l, i, a) => l !== '' || (a[i - 1] !== '' && i > 0)).join('\n').trim();
+const NOT_SLOVAK_COLORS = ['navy', 'ivory', 'gray', 'grey', 'white', 'purple', 'graphite', 'titanium', 'rose', 'lime', 'olive', 'slate', 'ultramarine', 'marine'];
+
+/** Farba v tvare „v čiernej farbe“; anglický názov (Midnight, Space Gray) → „vo farbe Midnight“. */
+export function colorPhrase(color?: string) {
+  const c = color?.trim();
+  if (!c) return '';
+  const words = c.split(/\s+/);
+  const last = words[words.length - 1];
+  // Slovenské prídavné meno (čierna, modrý, biele…) → 6. pád ženského rodu (čiernej, modrej, bielej).
+  const slovak = /^[a-záäčďéíĺľňóôŕšťúýž]+$/i.test(last) && !NOT_SLOVAK_COLORS.includes(last.toLowerCase()) && (/[áäčďéíĺľňóôŕšťúýž]/i.test(last) || /[nvlrtd][aye]$/i.test(last));
+  if (slovak && /[aáyýeé]$/i.test(last)) return `v ${[...words.slice(0, -1), last.replace(/[aáyýeé]$/i, 'ej')].join(' ').toLowerCase()} farbe`;
+  return `vo farbe ${c}`;
+}
+
+/** Podstatné meno a sloveso podľa typu zariadenia („Telefón je“, „Hodinky sú“). */
+const AD_SUBJECT: Record<string, { noun: string; verb: string; demo: string }> = {
+  mobil: { noun: 'Telefón', verb: 'je', demo: 'tento' },
+  tablet: { noun: 'Tablet', verb: 'je', demo: 'tento' },
+  notebook: { noun: 'Notebook', verb: 'je', demo: 'tento' },
+  hodinky: { noun: 'Hodinky', verb: 'sú', demo: 'tieto' },
+  konzola: { noun: 'Konzola', verb: 'je', demo: 'túto' },
+  ine: { noun: 'Zariadenie', verb: 'je', demo: 'toto' },
+};
+
+/** Kontroly, ktoré hovoria o funkčnosti (odhlásenie z účtu a reset do inzerátu nepatria). */
+const FUNCTION_CHECKS = PHONE_CHECKS.filter((c) => c.id !== 'ucty' && c.id !== 'reset');
+
+/**
+ * Text inzerátu v štýle ChrisStop:
+ * „Predám tento Apple iPhone 11 v čiernej farbe s kapacitou 128 GB. Telefón je v dokonalom stave…“
+ */
+export function adText(p: Phone, business: { adFooter?: string }, warrantyMonths: number) {
+  const d = p.device;
+  const subj = AD_SUBJECT[d.type] ?? AD_SUBJECT.mobil;
+  const name = d.model.toLowerCase().startsWith(d.brand.toLowerCase()) ? d.model : `${d.brand} ${d.model}`.trim();
+  const first = [`Predám ${subj.demo} ${name}`, colorPhrase(d.color), d.storage ? `s kapacitou ${d.storage}` : ''].filter(Boolean).join(' ') + '.';
+
+  const stateText = {
+    A: `${subj.noun} ${subj.verb} v dokonalom stave bez poškodení.`,
+    B: `${subj.noun} ${subj.verb} v dobrom stave s malými nedostatkami.`,
+    C: `${subj.noun} ${subj.verb} v opotrebovanom stave s viditeľnými známkami používania.`,
+  }[p.grade];
+  const defects = p.grade !== 'A' && p.defects?.trim() ? p.defects.trim().replace(/[.\s]+$/, '') : '';
+  const broken = FUNCTION_CHECKS.filter((c) => p.checks?.[c.id] === false).map((c) => c.label.toLowerCase());
+  const works = broken.length ? `Nefunkčné: ${broken.join(', ')}.` : 'Všetko plne funkčné.';
+  const second = [stateText, defects ? `${defects.charAt(0).toUpperCase()}${defects.slice(1)}.` : '', works].filter(Boolean).join(' ');
+
+  const details = [
+    d.batteryHealth ? `Zdravie batérie: ${d.batteryHealth} %` : '',
+    p.tasks?.some((t) => t.done && /bat/i.test(t.name)) ? 'nová batéria' : '',
+    warrantyMonths > 0 ? `záruka ${warrantyMonths} ${warrantyMonths === 1 ? 'mesiac' : warrantyMonths <= 4 ? 'mesiace' : 'mesiacov'}` : '',
+    d.accessories?.trim() ? d.accessories.trim() : '',
+  ].filter(Boolean);
+  if (details[0]) details[0] = details[0].charAt(0).toUpperCase() + details[0].slice(1);
+
+  const footer = (business.adFooter ?? DEFAULT_AD_FOOTER).trim();
+  return [first, second, '', ...details, ...(footer ? ['', footer] : [])].join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }

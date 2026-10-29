@@ -355,6 +355,8 @@ export interface BusinessSettings {
   /** Záruka na predané (použité) telefóny v mesiacoch. */
   phoneWarrantyMonths?: number;
   defaultWarrantyMonths: number;
+  /** Záver textu inzerátu (osobný odber, dobierka…). */
+  adFooter?: string;
   /** Faktúry: prefix pred rokom (predvolene žiadny → 20260001), splatnosť v dňoch, sadzba DPH. */
   invoicePrefix?: string;
   invoiceDueDays?: number;

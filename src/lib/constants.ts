@@ -122,6 +122,9 @@ export const PHONE_CHECKS: { id: string; label: string }[] = [
   { id: 'reset', label: 'Obnovené továrenské nastavenia' },
 ];
 
+/** Záver inzerátu – odber a doprava (dá sa zmeniť v Nastaveniach). */
+export const DEFAULT_AD_FOOTER = 'Osobný odber možný vo Veľkých Kapušanoch, poprípade možnosť odoslať na dobierku po uhradení 20 € zálohy vopred.';
+
 export const PHONE_TASK_PRESETS = ['Výmena batérie', 'Výmena displeja', 'Zadné sklo', 'Výmena konektora', 'Čistenie a kontrola', 'Aktualizácia softvéru', 'Nové ochranné sklo'];
 export const STORAGE_PRESETS = ['32 GB', '64 GB', '128 GB', '256 GB', '512 GB', '1 TB'];
 
@@ -211,6 +214,7 @@ export const DEFAULT_SETTINGS: BusinessSettings = {
   phoneStockPrefix: 'S',
   phoneWarrantyMonths: 12,
   defaultWarrantyMonths: DEFAULT_WARRANTY_MONTHS,
+  adFooter: DEFAULT_AD_FOOTER,
   invoicePrefix: '',
   invoiceDueDays: 14,
   vatRate: 23,

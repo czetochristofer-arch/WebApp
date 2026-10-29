@@ -109,6 +109,8 @@ function PhoneDetail({ phone }: { phone: Phone }) {
   const [saving, setSaving] = useState(false);
   const [selling, setSelling] = useState(false);
   const [ad, setAd] = useState(false);
+  // Text inzerátu sa dá pred skopírovaním upraviť.
+  const [adDraft, setAdDraft] = useState('');
   const [showSeller, setShowSeller] = useState(false);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => ({ ...d, [k]: v }));
 
@@ -193,7 +195,14 @@ function PhoneDetail({ phone }: { phone: Phone }) {
           <Button size="sm" icon={<Tag className="size-4" />} onClick={() => print('cenovka')}>
             Cenovka
           </Button>
-          <Button size="sm" icon={<Megaphone className="size-4" />} onClick={() => setAd(true)}>
+          <Button
+            size="sm"
+            icon={<Megaphone className="size-4" />}
+            onClick={() => {
+              setAdDraft(adText(phone, settings, warrantyMonths));
+              setAd(true);
+            }}
+          >
             Inzerát
           </Button>
           {isOwner && (
@@ -440,7 +449,7 @@ function PhoneDetail({ phone }: { phone: Phone }) {
               variant="primary"
               icon={<Copy className="size-4" />}
               onClick={async () => {
-                const ok = await copyText(adText(phone, settings, warrantyMonths));
+                const ok = await copyText(adDraft);
                 toast(ok ? 'Text skopírovaný' : 'Skopírujte text ručne');
               }}
             >
@@ -449,8 +458,10 @@ function PhoneDetail({ phone }: { phone: Phone }) {
           </>
         }
       >
-        <Textarea rows={12} readOnly value={adText(phone, settings, warrantyMonths)} />
-        <p className="mt-2 text-xs text-muted">Text sa skladá z údajov o telefóne. Pred zverejnením ho môžete upraviť – a nezabudnite priložiť fotky.</p>
+        <Textarea rows={12} value={adDraft} onChange={(e) => setAdDraft(e.target.value)} />
+        <p className="mt-2 text-xs text-muted">
+          Text sa skladá z údajov o zariadení (stav A/B/C, batéria, záruka, príslušenstvo). Pred skopírovaním ho môžete upraviť; záver o odbere a doprave zmeníte v Nastaveniach. Nezabudnite priložiť fotky.
+        </p>
       </Modal>
     </div>
   );

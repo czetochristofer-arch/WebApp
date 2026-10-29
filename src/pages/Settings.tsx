@@ -8,6 +8,7 @@ import { Badge, Button, Card, IconButton, Input, PageHeader, Segmented, Select, 
 import { useFeedback } from '@/components/feedback';
 import { col, getCounter, type CounterKind, inviteMember, removeInvite, removeMember, saveSettings, setCounter } from '@/lib/db';
 import { useLiveQuery } from '@/lib/hooks';
+import { DEFAULT_AD_FOOTER } from '@/lib/constants';
 import { getInvoiceCounter, invoiceNumber, setInvoiceCounter } from '@/lib/invoice';
 import { fmtDateTime, toDate } from '@/lib/format';
 import type { AgentModel, BusinessSettings, Member } from '@/lib/types';
@@ -169,6 +170,13 @@ function DocumentsSection() {
           onChange={(v) => set('invoiceOnHandover', v)}
           label="Pri vydaní zákazky vystaviť faktúru"
           hint="Predvolene zaškrtnuté v okne Vydať zákazníkovi – faktúra je zároveň doklad o vydaní a záručný list"
+        />
+        <Textarea
+          label="Inzerát – záver (odber a doprava)"
+          hint="Pridá sa na koniec každého textu inzerátu v sekcii Telefóny"
+          value={draft.adFooter ?? DEFAULT_AD_FOOTER}
+          onChange={(e) => set('adFooter', e.target.value)}
+          rows={2}
         />
         <Textarea label="Podmienky servisu (tlačia sa na preberací protokol)" value={draft.protocolTerms} onChange={(e) => set('protocolTerms', e.target.value)} rows={6} />
         <Textarea
